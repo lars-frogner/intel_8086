@@ -127,8 +127,19 @@ fn test_decoding_mov_reg_mem_neg_disp_instructions() {
         "\
         bits 16\n\
         mov cx, [bp - 1]\n\
-        mov cx, [bp - 128]\n\
-        mov cx, [bp - 129]\n\
-        mov cx, [bp - 32768]",
+        mov bl, [bp - 128]\n\
+        mov [bp - 129], ah\n\
+        mov [bp - 32768], dx",
+    );
+}
+
+#[test]
+fn test_decoding_mov_reg_mem_direct_address_instructions() {
+    test_decoding(
+        "\
+        bits 16\n\
+        mov cx, [0]\n\
+        mov bl, [255]\n\
+        mov [65535], ah",
     );
 }

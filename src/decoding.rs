@@ -144,6 +144,7 @@ pub enum ByteRegister {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryAddressExpression {
+    Direct(u16),
     BXPlusSI,
     BXPlusDI,
     BPPlusSI,
@@ -230,16 +231,6 @@ impl fmt::Display for MovRegMem {
     }
 }
 
-impl MemoryMode {
-    fn displacement_size(&self) -> usize {
-        match self {
-            Self::NoDisplacement => 0,
-            Self::ByteDisplacement => 1,
-            Self::WordDisplacement => 2,
-        }
-    }
-}
-
 impl fmt::Display for Register {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -287,6 +278,22 @@ impl fmt::Display for ByteRegister {
     }
 }
 
+impl MemoryAddressExpression {
+    fn displacement_size(&self, mode: MemoryMode) -> usize {
+        match mode {
+            MemoryMode::NoDisplacement => {
+                if let Self::Direct(_) = self {
+                    2
+                } else {
+                    0
+                }
+            }
+            MemoryMode::ByteDisplacement => 1,
+            MemoryMode::WordDisplacement => 2,
+        }
+    }
+}
+
 impl fmt::Display for MemoryAddressExpression {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn fmt_disp(disp: &u16) -> impl fmt::Display {
@@ -301,6 +308,7 @@ impl fmt::Display for MemoryAddressExpression {
         }
 
         match self {
+            Self::Direct(addr) => write!(f, "[{}]", addr),
             Self::BXPlusSI => write!(f, "[bx + si]"),
             Self::BXPlusDI => write!(f, "[bx + di]"),
             Self::BPPlusSI => write!(f, "[bp + si]"),
@@ -364,18 +372,18 @@ pub fn decode_instruction(bytes: &[u8]) -> DecodeResult<DecodedInstruction> {
                         MovRegRegByte::SIZE,
                     ),
                 },
-                Mode::Memory(mem_mode) => (
-                    Instruction::MovRegMem(MovRegMem {
-                        direction,
-                        reg: decode_first_register(operand_size, bytes[1]),
-                        mem_addr_expr: decode_memory_address_expression(
-                            mem_mode,
-                            bytes[1],
-                            &bytes[2..],
-                        )?,
-                    }),
-                    2 + mem_mode.displacement_size(),
-                ),
+                Mode::Memory(mem_mode) => {
+                    let mem_addr_expr =
+                        decode_memory_address_expression(mem_mode, bytes[1], &bytes[2..])?;
+                    (
+                        Instruction::MovRegMem(MovRegMem {
+                            direction,
+                            reg: decode_first_register(operand_size, bytes[1]),
+                            mem_addr_expr,
+                        }),
+                        2 + mem_addr_expr.displacement_size(mem_mode),
+                    )
+                }
             }
         }
     };
@@ -476,54 +484,66 @@ fn decode_memory_address_expression(
     byte2: u8,
     disp_bytes: &[u8],
 ) -> DecodeResult<MemoryAddressExpression> {
+    fn sign_extend_to_16_bit(byte: u8) -> u16 {
+        byte as i8 as u16
+    }
+
+    fn combine_low_and_high_bytes(low_byte: u8, high_byte: u8) -> u16 {
+        low_byte as u16 + (high_byte as u16).shl(8)
+    }
+
+    fn decode_decode_memory_address_expression_with_disp(
+        masked_byte: u8,
+        disp: u16,
+    ) -> MemoryAddressExpression {
+        match masked_byte {
+            0b00000000 => MemoryAddressExpression::BXPlusSIPlus(disp),
+            0b00000001 => MemoryAddressExpression::BXPlusDIPlus(disp),
+            0b00000010 => MemoryAddressExpression::BPPlusSIPlus(disp),
+            0b00000011 => MemoryAddressExpression::BPPlusDIPlus(disp),
+            0b00000100 => MemoryAddressExpression::SIPlus(disp),
+            0b00000101 => MemoryAddressExpression::DIPlus(disp),
+            0b00000110 => MemoryAddressExpression::BPPlus(disp),
+            0b00000111 => MemoryAddressExpression::BXPlus(disp),
+            _ => unreachable!(),
+        }
+    }
+
     let masked_byte = byte2 & 0b00000111;
-    match mode {
+    Ok(match mode {
         MemoryMode::NoDisplacement => match masked_byte {
-            0b00000000 => Ok(MemoryAddressExpression::BXPlusSI),
-            0b00000001 => Ok(MemoryAddressExpression::BXPlusDI),
-            0b00000010 => Ok(MemoryAddressExpression::BPPlusSI),
-            0b00000011 => Ok(MemoryAddressExpression::BPPlusDI),
-            0b00000100 => Ok(MemoryAddressExpression::SI),
-            0b00000101 => Ok(MemoryAddressExpression::DI),
-            0b00000111 => Ok(MemoryAddressExpression::BX),
-            _ => Err(DecodeError::UnsupportedMemoryAddressExpression { byte: byte2 }),
+            0b00000110 => {
+                if disp_bytes.len() < 2 {
+                    return Err(DecodeError::MissingDisplacementBytes { bytes: disp_bytes });
+                }
+                let addr = combine_low_and_high_bytes(disp_bytes[0], disp_bytes[1]);
+                MemoryAddressExpression::Direct(addr)
+            }
+            0b00000000 => MemoryAddressExpression::BXPlusSI,
+            0b00000001 => MemoryAddressExpression::BXPlusDI,
+            0b00000010 => MemoryAddressExpression::BPPlusSI,
+            0b00000011 => MemoryAddressExpression::BPPlusDI,
+            0b00000100 => MemoryAddressExpression::SI,
+            0b00000101 => MemoryAddressExpression::DI,
+            0b00000111 => MemoryAddressExpression::BX,
+            _ => unreachable!(),
         },
         MemoryMode::ByteDisplacement => {
             if disp_bytes.is_empty() {
                 return Err(DecodeError::MissingDisplacementBytes { bytes: disp_bytes });
             }
-            let disp = disp_bytes[0] as i8 as u16; // Sign-extend to 16 bits
-            match masked_byte {
-                0b00000000 => Ok(MemoryAddressExpression::BXPlusSIPlus(disp)),
-                0b00000001 => Ok(MemoryAddressExpression::BXPlusDIPlus(disp)),
-                0b00000010 => Ok(MemoryAddressExpression::BPPlusSIPlus(disp)),
-                0b00000011 => Ok(MemoryAddressExpression::BPPlusDIPlus(disp)),
-                0b00000100 => Ok(MemoryAddressExpression::SIPlus(disp)),
-                0b00000101 => Ok(MemoryAddressExpression::DIPlus(disp)),
-                0b00000110 => Ok(MemoryAddressExpression::BPPlus(disp)),
-                0b00000111 => Ok(MemoryAddressExpression::BXPlus(disp)),
-                _ => unreachable!(),
-            }
+            let disp = sign_extend_to_16_bit(disp_bytes[0]);
+            decode_decode_memory_address_expression_with_disp(masked_byte, disp)
         }
         MemoryMode::WordDisplacement => {
             if disp_bytes.len() < 2 {
                 return Err(DecodeError::MissingDisplacementBytes { bytes: disp_bytes });
             }
-            // Use second byte as high byte and first byte as low byte
-            let disp = (disp_bytes[1] as u16).shl(8) + (disp_bytes[0] as u16);
-            match masked_byte {
-                0b00000000 => Ok(MemoryAddressExpression::BXPlusSIPlus(disp)),
-                0b00000001 => Ok(MemoryAddressExpression::BXPlusDIPlus(disp)),
-                0b00000010 => Ok(MemoryAddressExpression::BPPlusSIPlus(disp)),
-                0b00000011 => Ok(MemoryAddressExpression::BPPlusDIPlus(disp)),
-                0b00000100 => Ok(MemoryAddressExpression::SIPlus(disp)),
-                0b00000101 => Ok(MemoryAddressExpression::DIPlus(disp)),
-                0b00000110 => Ok(MemoryAddressExpression::BPPlus(disp)),
-                0b00000111 => Ok(MemoryAddressExpression::BXPlus(disp)),
-                _ => unreachable!(),
-            }
+            // Use first byte as low byte and second as high byte
+            let disp = combine_low_and_high_bytes(disp_bytes[0], disp_bytes[1]);
+            decode_decode_memory_address_expression_with_disp(masked_byte, disp)
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -639,7 +659,27 @@ mod tests {
     }
 
     #[test]
-    fn should_decode_memory_address_expressions() {
+    fn should_decode_direct_memory_address_expressions() {
+        assert_eq!(
+            no_error(decode_memory_address_expression(
+                MemoryMode::NoDisplacement,
+                0b00000110,
+                &[0x00, 0x00]
+            )),
+            MemoryAddressExpression::Direct(0x0000)
+        );
+        assert_eq!(
+            no_error(decode_memory_address_expression(
+                MemoryMode::NoDisplacement,
+                0b00000110,
+                &[0xcd, 0xab]
+            )),
+            MemoryAddressExpression::Direct(0xabcd)
+        );
+    }
+
+    #[test]
+    fn should_decode_memory_address_expressions_no_disp() {
         assert_eq!(
             no_error(decode_memory_address_expression(
                 MemoryMode::NoDisplacement,
@@ -932,6 +972,28 @@ mod tests {
                 size: 3
             }
         );
+        assert_eq!(
+            no_error(decode_instruction(&[0b10001011, 0b10000110, 0xcd, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovRegMem(MovRegMem {
+                    direction: Direction::ToFrom,
+                    reg: Register::Full(WordRegister::AX),
+                    mem_addr_expr: MemoryAddressExpression::BPPlus(0xabcd)
+                }),
+                size: 4
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b10001011, 0b00000110, 0xcd, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovRegMem(MovRegMem {
+                    direction: Direction::ToFrom,
+                    reg: Register::Full(WordRegister::AX),
+                    mem_addr_expr: MemoryAddressExpression::Direct(0xabcd)
+                }),
+                size: 4
+            }
+        );
     }
 
     #[test]
@@ -982,6 +1044,12 @@ mod tests {
         assert_eq!(&ByteRegister::CH.to_string(), "ch");
         assert_eq!(&ByteRegister::DL.to_string(), "dl");
         assert_eq!(&ByteRegister::DH.to_string(), "dh");
+    }
+
+    #[test]
+    fn should_display_direct_memory_address_expressions() {
+        assert_eq!(&MemoryAddressExpression::Direct(42).to_string(), "[42]");
+        assert_eq!(&MemoryAddressExpression::Direct(4096).to_string(), "[4096]");
     }
 
     #[test]
