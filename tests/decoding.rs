@@ -143,3 +143,13 @@ fn test_decoding_mov_reg_mem_direct_address_instructions() {
         mov [65535], ah",
     );
 }
+
+#[test]
+fn test_decoding_mov_mem_accum_reg_instruction() {
+    test_decoding(
+        "\
+        bits 16\n\
+        mov al, [0]\n\
+        mov [256], ax",
+    );
+}

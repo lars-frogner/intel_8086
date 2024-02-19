@@ -43,6 +43,7 @@ pub enum Instruction {
     MovRegRegWord(MovRegRegWord),
     MovRegRegByte(MovRegRegByte),
     MovRegMem(MovRegMem),
+    MovMemAccumReg(MovMemAccumReg),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,9 +67,17 @@ pub struct MovRegMem {
     mem_addr_expr: MemoryAddressExpression,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MovMemAccumReg {
+    operand_size: OperandSize,
+    direction: Direction,
+    mem_addr: u16,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opcode {
     MovRegMemToFromReg,
+    MovMemAccumReg,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +198,9 @@ impl fmt::Display for Instruction {
                 Self::MovRegMem(instr) => {
                     instr.to_string()
                 }
+                Self::MovMemAccumReg(instr) => {
+                    instr.to_string()
+                }
             }
         )
     }
@@ -227,6 +239,29 @@ impl fmt::Display for MovRegMem {
         match self.direction {
             Direction::ToFrom => write!(f, "mov {}, {}", self.reg, self.mem_addr_expr),
             Direction::FromTo => write!(f, "mov {}, {}", self.mem_addr_expr, self.reg),
+        }
+    }
+}
+
+impl fmt::Display for MovMemAccumReg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reg = match self.operand_size {
+            OperandSize::Word => Register::Full(WordRegister::AX),
+            OperandSize::Byte => Register::Half(ByteRegister::AL),
+        };
+        let addr = MemoryAddressExpression::Direct(self.mem_addr);
+        match self.direction {
+            Direction::ToFrom => write!(f, "mov {}, {}", reg, addr),
+            Direction::FromTo => write!(f, "mov {}, {}", addr, reg),
+        }
+    }
+}
+
+impl Direction {
+    fn flipped(&self) -> Self {
+        match self {
+            Self::ToFrom => Self::FromTo,
+            Self::FromTo => Self::ToFrom,
         }
     }
 }
@@ -386,15 +421,30 @@ pub fn decode_instruction(bytes: &[u8]) -> DecodeResult<DecodedInstruction> {
                 }
             }
         }
+        Opcode::MovMemAccumReg => {
+            if bytes.len() < 3 {
+                return Err(DecodeError::MissingInstructionBytes { bytes });
+            }
+            let direction = decode_direction(bytes[0]).flipped();
+            let operand_size = decode_operand_size(bytes[0]);
+            (
+                Instruction::MovMemAccumReg(MovMemAccumReg {
+                    operand_size,
+                    direction,
+                    mem_addr: combine_low_and_high_bytes(bytes[1], bytes[2]),
+                }),
+                3,
+            )
+        }
     };
     Ok(DecodedInstruction { instr, size })
 }
 
 fn decode_opcode(byte1: u8) -> DecodeResult<'static, Opcode> {
-    if byte1 & 0b11111100 == 0b10001000 {
-        Ok(Opcode::MovRegMemToFromReg)
-    } else {
-        Err(DecodeError::UnknownOpcode { byte: byte1 })
+    match byte1 & 0b11111100 {
+        0b10001000 => Ok(Opcode::MovRegMemToFromReg),
+        0b10100000 => Ok(Opcode::MovMemAccumReg),
+        _ => Err(DecodeError::UnknownOpcode { byte: byte1 }),
     }
 }
 
@@ -488,10 +538,6 @@ fn decode_memory_address_expression(
         byte as i8 as u16
     }
 
-    fn combine_low_and_high_bytes(low_byte: u8, high_byte: u8) -> u16 {
-        low_byte as u16 + (high_byte as u16).shl(8)
-    }
-
     fn decode_decode_memory_address_expression_with_disp(
         masked_byte: u8,
         disp: u16,
@@ -546,6 +592,10 @@ fn decode_memory_address_expression(
     })
 }
 
+fn combine_low_and_high_bytes(low_byte: u8, high_byte: u8) -> u16 {
+    low_byte as u16 + (high_byte as u16).shl(8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,13 +622,19 @@ mod tests {
     }
 
     #[test]
-    fn should_fail_decoding_incorrect_mov_reg_reg_opcode() {
+    fn should_fail_decoding_unknown_opcode() {
         let byte1 = 0b00000000;
         let result = decode_opcode(byte1);
         assert_eq!(
             result.unwrap_err(),
             DecodeError::UnknownOpcode { byte: byte1 }
         );
+    }
+
+    #[test]
+    fn should_decode_mov_mem_accum_reg_opcode() {
+        assert_eq!(no_error(decode_opcode(0b10100000)), Opcode::MovMemAccumReg);
+        assert_eq!(no_error(decode_opcode(0b10100011)), Opcode::MovMemAccumReg);
     }
 
     #[test]
@@ -997,6 +1053,43 @@ mod tests {
     }
 
     #[test]
+    fn should_decode_mov_mem_accum_reg_instructions() {
+        assert_eq!(
+            no_error(decode_instruction(&[0b10100001, 0xcd, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovMemAccumReg(MovMemAccumReg {
+                    operand_size: OperandSize::Word,
+                    direction: Direction::ToFrom,
+                    mem_addr: 0xabcd
+                }),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b10100011, 0xcd, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovMemAccumReg(MovMemAccumReg {
+                    operand_size: OperandSize::Word,
+                    direction: Direction::FromTo,
+                    mem_addr: 0xabcd
+                }),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b10100000, 0xcd, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovMemAccumReg(MovMemAccumReg {
+                    operand_size: OperandSize::Byte,
+                    direction: Direction::ToFrom,
+                    mem_addr: 0xabcd
+                }),
+                size: 3
+            }
+        );
+    }
+
+    #[test]
     fn should_fail_decoding_no_instruction() {
         assert_eq!(
             decode_instruction(&[]).unwrap_err(),
@@ -1154,6 +1247,15 @@ mod tests {
             })
             .to_string(),
             "mov [bp + si + 3], ah"
+        );
+        assert_eq!(
+            &Instruction::MovMemAccumReg(MovMemAccumReg {
+                operand_size: OperandSize::Word,
+                direction: Direction::ToFrom,
+                mem_addr: 256
+            })
+            .to_string(),
+            "mov ax, [256]"
         );
     }
 }
