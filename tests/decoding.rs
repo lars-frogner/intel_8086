@@ -186,3 +186,15 @@ fn test_decoding_mov_imm_mem_instructions() {
         mov [bp + 32767], word -512",
     );
 }
+
+#[test]
+fn test_decoding_mov_imm_reg_instructions() {
+    test_decoding(
+        "\
+        bits 16\n\
+        mov al, 0\n\
+        mov bx, 256\n\
+        mov bp, 4096\n\
+        mov ch, -16",
+    )
+}

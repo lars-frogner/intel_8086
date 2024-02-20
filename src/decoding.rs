@@ -17,6 +17,8 @@ pub enum DecodeError<'a> {
     MissingInstructionBytes { bytes: &'a [u8] },
     #[error("insufficient bytes for memory address displacement: {bytes:?}")]
     MissingDisplacementBytes { bytes: &'a [u8] },
+    #[error("invalid bits in instruction: {bytes:?}")]
+    InvalidInstruction { bytes: &'a [u8] },
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -91,8 +93,9 @@ pub struct MovImmReg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opcode {
     MovRegMemToFromReg,
-    MovMemToAccumReg,
+    MovMemToFromAccumReg,
     MovImmToRegMem,
+    MovImmToReg,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,6 +204,12 @@ impl fmt::Display for Program {
                 .iter()
                 .fold(String::new(), |acc, instr| format!("{}\n{}", acc, instr)),
         )
+    }
+}
+
+impl DecodedInstruction {
+    fn new(instr: Instruction, size: usize) -> Self {
+        Self { instr, size }
     }
 }
 
@@ -428,103 +437,169 @@ pub fn decode_instruction(bytes: &[u8]) -> DecodeResult<DecodedInstruction> {
         return Err(DecodeError::MissingInstructionBytes { bytes });
     }
     let opcode = decode_opcode(bytes[0])?;
-    let (instr, size) = match opcode {
-        Opcode::MovRegMemToFromReg => {
-            if bytes.len() < 2 {
-                return Err(DecodeError::MissingInstructionBytes { bytes });
+    match opcode {
+        Opcode::MovRegMemToFromReg => decode_instr_for_mov_reg_mem_to_from_reg_opcode(bytes),
+        Opcode::MovMemToFromAccumReg => decode_instr_for_mov_mem_to_from_accum_reg_opcode(bytes),
+        Opcode::MovImmToRegMem => decode_instr_for_mov_imm_to_reg_mem_opcode(bytes),
+        Opcode::MovImmToReg => decode_instr_for_mov_imm_to_reg_opcode(bytes),
+    }
+}
+
+fn decode_instr_for_mov_reg_mem_to_from_reg_opcode(
+    bytes: &[u8],
+) -> DecodeResult<DecodedInstruction> {
+    if bytes.len() < 2 {
+        return Err(DecodeError::MissingInstructionBytes { bytes });
+    }
+    let direction = decode_direction(bytes[0]);
+    let operand_size = decode_operand_size(bytes[0]);
+    let mode = decode_mode(bytes[1]);
+    Ok(match mode {
+        Mode::Register => match operand_size {
+            OperandSize::Word => DecodedInstruction::new(
+                Instruction::MovRegRegWord(MovRegRegWord {
+                    direction,
+                    reg1: decode_first_word_register(bytes[1]),
+                    reg2: decode_second_word_register(bytes[1]),
+                }),
+                MovRegRegWord::SIZE,
+            ),
+            OperandSize::Byte => DecodedInstruction::new(
+                Instruction::MovRegRegByte(MovRegRegByte {
+                    direction,
+                    reg1: decode_first_byte_register(bytes[1]),
+                    reg2: decode_second_byte_register(bytes[1]),
+                }),
+                MovRegRegByte::SIZE,
+            ),
+        },
+        Mode::Memory(mem_mode) => {
+            let mem_addr_expr = decode_memory_address_expression(mem_mode, bytes[1], &bytes[2..])?;
+            DecodedInstruction::new(
+                Instruction::MovRegMem(MovRegMem {
+                    direction,
+                    reg: decode_first_register(operand_size, bytes[1]),
+                    mem_addr_expr,
+                }),
+                2 + mem_addr_expr.displacement_size(mem_mode),
+            )
+        }
+    })
+}
+
+fn decode_instr_for_mov_mem_to_from_accum_reg_opcode(
+    bytes: &[u8],
+) -> DecodeResult<DecodedInstruction> {
+    if bytes.len() < 3 {
+        return Err(DecodeError::MissingInstructionBytes { bytes });
+    }
+    let direction = decode_direction(bytes[0]).flipped();
+    let operand_size = decode_operand_size(bytes[0]);
+    Ok(DecodedInstruction::new(
+        Instruction::MovMemAccumReg(MovMemAccumReg {
+            operand_size,
+            direction,
+            mem_addr: combine_low_and_high_bytes(bytes[1], bytes[2]),
+        }),
+        3,
+    ))
+}
+
+fn decode_instr_for_mov_imm_to_reg_mem_opcode(bytes: &[u8]) -> DecodeResult<DecodedInstruction> {
+    if bytes.len() < 3 {
+        return Err(DecodeError::MissingInstructionBytes { bytes });
+    }
+    let operand_size = decode_operand_size(bytes[0]);
+    let mode = decode_mode(bytes[1]);
+    if bytes[1] & 0b00111000 != 0 {
+        return Err(DecodeError::InvalidInstruction { bytes: &bytes[..2] });
+    }
+    Ok(match mode {
+        Mode::Register => match operand_size {
+            OperandSize::Word => {
+                if bytes.len() < 4 {
+                    return Err(DecodeError::MissingInstructionBytes { bytes });
+                }
+                DecodedInstruction::new(
+                    Instruction::MovImmReg(MovImmReg {
+                        imm: combine_low_and_high_bytes(bytes[2], bytes[3]),
+                        reg: Register::Full(decode_second_word_register(bytes[1])),
+                    }),
+                    4,
+                )
             }
-            let direction = decode_direction(bytes[0]);
-            let operand_size = decode_operand_size(bytes[0]);
-            let mode = decode_mode(bytes[1]);
-            match mode {
-                Mode::Register => match operand_size {
-                    OperandSize::Word => (
-                        Instruction::MovRegRegWord(MovRegRegWord {
-                            direction,
-                            reg1: decode_first_word_register(bytes[1]),
-                            reg2: decode_second_word_register(bytes[1]),
-                        }),
-                        MovRegRegWord::SIZE,
-                    ),
-                    OperandSize::Byte => (
-                        Instruction::MovRegRegByte(MovRegRegByte {
-                            direction,
-                            reg1: decode_first_byte_register(bytes[1]),
-                            reg2: decode_second_byte_register(bytes[1]),
-                        }),
-                        MovRegRegByte::SIZE,
-                    ),
-                },
-                Mode::Memory(mem_mode) => {
-                    let mem_addr_expr =
-                        decode_memory_address_expression(mem_mode, bytes[1], &bytes[2..])?;
+            OperandSize::Byte => DecodedInstruction::new(
+                Instruction::MovImmReg(MovImmReg {
+                    imm: bytes[2] as u16,
+                    reg: Register::Half(decode_second_byte_register(bytes[1])),
+                }),
+                3,
+            ),
+        },
+        Mode::Memory(mem_mode) => {
+            let mem_addr_expr = decode_memory_address_expression(mem_mode, bytes[1], &bytes[2..])?;
+            let disp_size = mem_addr_expr.displacement_size(mem_mode);
+            let (imm, data_size) = match operand_size {
+                OperandSize::Word => {
+                    if bytes.len() < 2 + disp_size + 2 {
+                        return Err(DecodeError::MissingInstructionBytes { bytes });
+                    }
                     (
-                        Instruction::MovRegMem(MovRegMem {
-                            direction,
-                            reg: decode_first_register(operand_size, bytes[1]),
-                            mem_addr_expr,
-                        }),
-                        2 + mem_addr_expr.displacement_size(mem_mode),
+                        Immediate::Word(combine_low_and_high_bytes(
+                            bytes[2 + disp_size],
+                            bytes[2 + disp_size + 1],
+                        )),
+                        2,
                     )
                 }
-            }
+                OperandSize::Byte => {
+                    if bytes.len() < 2 + disp_size + 1 {
+                        return Err(DecodeError::MissingInstructionBytes { bytes });
+                    }
+                    (Immediate::Byte(bytes[2 + disp_size]), 1)
+                }
+            };
+            DecodedInstruction::new(
+                Instruction::MovImmMem(MovImmMem { imm, mem_addr_expr }),
+                2 + disp_size + data_size,
+            )
         }
-        Opcode::MovMemToAccumReg => {
+    })
+}
+
+fn decode_instr_for_mov_imm_to_reg_opcode(bytes: &[u8]) -> DecodeResult<DecodedInstruction> {
+    fn decode_mov_imm_reg_operand_size(byte1: u8) -> OperandSize {
+        if byte1 & 0b00001000 == 0b00000000 {
+            OperandSize::Byte
+        } else {
+            OperandSize::Word
+        }
+    }
+    if bytes.len() < 2 {
+        return Err(DecodeError::MissingInstructionBytes { bytes });
+    }
+    let operand_size = decode_mov_imm_reg_operand_size(bytes[0]);
+    Ok(match operand_size {
+        OperandSize::Word => {
             if bytes.len() < 3 {
                 return Err(DecodeError::MissingInstructionBytes { bytes });
             }
-            let direction = decode_direction(bytes[0]).flipped();
-            let operand_size = decode_operand_size(bytes[0]);
-            (
-                Instruction::MovMemAccumReg(MovMemAccumReg {
-                    operand_size,
-                    direction,
-                    mem_addr: combine_low_and_high_bytes(bytes[1], bytes[2]),
+            DecodedInstruction::new(
+                Instruction::MovImmReg(MovImmReg {
+                    imm: combine_low_and_high_bytes(bytes[1], bytes[2]),
+                    reg: Register::Full(decode_second_word_register(bytes[0])),
                 }),
                 3,
             )
         }
-        Opcode::MovImmToRegMem => {
-            if bytes.len() < 3 {
-                return Err(DecodeError::MissingInstructionBytes { bytes });
-            }
-            let operand_size = decode_operand_size(bytes[0]);
-            let mode = decode_mode(bytes[1]);
-            match mode {
-                Mode::Register => todo!(),
-                Mode::Memory(mem_mode) => {
-                    let mem_addr_expr =
-                        decode_memory_address_expression(mem_mode, bytes[1], &bytes[2..])?;
-                    let disp_size = mem_addr_expr.displacement_size(mem_mode);
-                    let (imm, data_size) = match operand_size {
-                        OperandSize::Word => {
-                            if bytes.len() < 2 + disp_size + 2 {
-                                return Err(DecodeError::MissingInstructionBytes { bytes });
-                            }
-                            (
-                                Immediate::Word(combine_low_and_high_bytes(
-                                    bytes[2 + disp_size],
-                                    bytes[2 + disp_size + 1],
-                                )),
-                                2,
-                            )
-                        }
-                        OperandSize::Byte => {
-                            if bytes.len() < 2 + disp_size + 1 {
-                                return Err(DecodeError::MissingInstructionBytes { bytes });
-                            }
-                            (Immediate::Byte(bytes[2 + disp_size]), 1)
-                        }
-                    };
-                    (
-                        Instruction::MovImmMem(MovImmMem { imm, mem_addr_expr }),
-                        2 + disp_size + data_size,
-                    )
-                }
-            }
-        }
-    };
-    Ok(DecodedInstruction { instr, size })
+        OperandSize::Byte => DecodedInstruction::new(
+            Instruction::MovImmReg(MovImmReg {
+                imm: bytes[1] as u16,
+                reg: Register::Half(decode_second_byte_register(bytes[0])),
+            }),
+            2,
+        ),
+    })
 }
 
 fn decode_opcode(byte1: u8) -> DecodeResult<'static, Opcode> {
@@ -532,8 +607,11 @@ fn decode_opcode(byte1: u8) -> DecodeResult<'static, Opcode> {
         0b11000110 => Ok(Opcode::MovImmToRegMem),
         _ => match byte1 & 0b11111100 {
             0b10001000 => Ok(Opcode::MovRegMemToFromReg),
-            0b10100000 => Ok(Opcode::MovMemToAccumReg),
-            _ => Err(DecodeError::UnknownOpcode { byte: byte1 }),
+            0b10100000 => Ok(Opcode::MovMemToFromAccumReg),
+            _ => match byte1 & 0b11110000 {
+                0b10110000 => Ok(Opcode::MovImmToReg),
+                _ => Err(DecodeError::UnknownOpcode { byte: byte1 }),
+            },
         },
     }
 }
@@ -715,11 +793,11 @@ mod tests {
     fn should_decode_mov_mem_to_accum_reg_opcode() {
         assert_eq!(
             no_error(decode_opcode(0b10100000)),
-            Opcode::MovMemToAccumReg
+            Opcode::MovMemToFromAccumReg
         );
         assert_eq!(
             no_error(decode_opcode(0b10100011)),
-            Opcode::MovMemToAccumReg
+            Opcode::MovMemToFromAccumReg
         );
     }
 
@@ -727,6 +805,12 @@ mod tests {
     fn should_decode_mov_imm_to_reg_mem_opcode() {
         assert_eq!(no_error(decode_opcode(0b11000110)), Opcode::MovImmToRegMem);
         assert_eq!(no_error(decode_opcode(0b11000111)), Opcode::MovImmToRegMem);
+    }
+
+    #[test]
+    fn should_decode_mov_imm_to_reg_opcode() {
+        assert_eq!(no_error(decode_opcode(0b10110000)), Opcode::MovImmToReg);
+        assert_eq!(no_error(decode_opcode(0b10111010)), Opcode::MovImmToReg);
     }
 
     #[test]
@@ -1289,6 +1373,50 @@ mod tests {
                     mem_addr_expr: MemoryAddressExpression::Direct(0xcdef)
                 }),
                 size: 5
+            }
+        );
+    }
+
+    #[test]
+    fn should_decode_mov_imm_reg_instructions() {
+        assert_eq!(
+            no_error(decode_instruction(&[0b11000111, 0b11000100, 0xcd, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovImmReg(MovImmReg {
+                    imm: 0xabcd,
+                    reg: Register::Full(WordRegister::SP)
+                }),
+                size: 4
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b11000110, 0b11000110, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovImmReg(MovImmReg {
+                    imm: 0xab,
+                    reg: Register::Half(ByteRegister::DH)
+                }),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b10111000, 0xcd, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovImmReg(MovImmReg {
+                    imm: 0xabcd,
+                    reg: Register::Full(WordRegister::AX)
+                }),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b10110011, 0xab])),
+            DecodedInstruction {
+                instr: Instruction::MovImmReg(MovImmReg {
+                    imm: 0xab,
+                    reg: Register::Half(ByteRegister::BL)
+                }),
+                size: 2
             }
         );
     }
