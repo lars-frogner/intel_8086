@@ -145,11 +145,44 @@ fn test_decoding_mov_reg_mem_direct_address_instructions() {
 }
 
 #[test]
-fn test_decoding_mov_mem_accum_reg_instruction() {
+fn test_decoding_mov_mem_accum_reg_instructions() {
     test_decoding(
         "\
         bits 16\n\
         mov al, [0]\n\
         mov [256], ax",
+    );
+}
+
+#[test]
+fn test_decoding_mov_imm_mem_instructions() {
+    test_decoding(
+        "\
+        bits 16\n\
+        mov [0], byte 0\n\
+        mov [3000], byte 1\n\
+        mov [bx + si], byte 2\n\
+        mov [bx + di], byte 4\n\
+        mov [bp + si], byte 8\n\
+        mov [bp + di], byte 16\n\
+        mov [si], byte 32\n\
+        mov [di], byte 64\n\
+        mov [bx], byte 128\n\
+        mov [bx + si + 1], word 256\n\
+        mov [bx + di + 2], word 512\n\
+        mov [bp + si + 3], word 1024\n\
+        mov [bp + di + 4], word 2048\n\
+        mov [si + 5], word 4096\n\
+        mov [di + 6], word 8192\n\
+        mov [bx + 127], byte -1\n\
+        mov [bp], byte -2\n\
+        mov [bx + si + 128], byte -4\n\
+        mov [bx + di + 200], byte -8\n\
+        mov [bp + si + 300], byte -16\n\
+        mov [bp + di + 400], byte -32\n\
+        mov [si + 500], byte -64\n\
+        mov [di + 600], byte -128\n\
+        mov [bx + 10000], word -256\n\
+        mov [bp + 32767], word -512",
     );
 }
