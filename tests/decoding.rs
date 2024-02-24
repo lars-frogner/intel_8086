@@ -198,3 +198,35 @@ fn test_decoding_mov_imm_reg_instructions() {
         mov ch, -16",
     )
 }
+
+#[test]
+fn test_decoding_mov_reg_seg_reg_instructions() {
+    test_decoding(
+        "\
+        bits 16\n\
+        mov es, ax\n\
+        mov cs, bx\n\
+        mov ss, cx\n\
+        mov ds, dx\n\
+        mov sp, es\n\
+        mov bp, cs\n\
+        mov si, ss\n\
+        mov di, ds",
+    )
+}
+
+#[test]
+fn test_decoding_mov_mem_seg_reg_instructions() {
+    test_decoding(
+        "\
+        bits 16\n\
+        mov es, [0]\n\
+        mov cs, [bp]\n\
+        mov ss, [bx + si]\n\
+        mov ds, [si + 5]\n\
+        mov [bp + di], es\n\
+        mov [bp + di + 78], cs\n\
+        mov [bp + di + 999], ss\n\
+        mov [1234], ds",
+    )
+}
