@@ -386,3 +386,48 @@ fn test_decoding_arithmetic_imm_accum_reg_instructions(op: &str) {
         op
     ))
 }
+
+#[test]
+fn test_decoding_mul_reg_mem_accum_reg_instructions() {
+    test_decoding_arithmetic_reg_mem_accum_reg_instructions("mul");
+}
+
+#[test]
+fn test_decoding_imul_reg_mem_accum_reg_instructions() {
+    test_decoding_arithmetic_reg_mem_accum_reg_instructions("imul");
+}
+
+#[test]
+fn test_decoding_div_reg_mem_accum_reg_instructions() {
+    test_decoding_arithmetic_reg_mem_accum_reg_instructions("div");
+}
+
+#[test]
+fn test_decoding_idiv_reg_mem_accum_reg_instructions() {
+    test_decoding_arithmetic_reg_mem_accum_reg_instructions("idiv");
+}
+
+#[test]
+fn test_decoding_not_reg_mem_accum_reg_instructions() {
+    test_decoding_arithmetic_reg_mem_accum_reg_instructions("not");
+}
+
+fn test_decoding_arithmetic_reg_mem_accum_reg_instructions(op: &str) {
+    test_decoding(format!(
+        "\
+        bits 16\n\
+        {0} ax\n\
+        {0} bx\n\
+        {0} al\n\
+        {0} bh\n\
+        {0} byte [4]\n\
+        {0} word [4]\n\
+        {0} byte [bp]\n\
+        {0} word [bp]\n\
+        {0} byte [bp + 4]\n\
+        {0} word [bp + 4]\n\
+        {0} byte [bp + 4096]\n\
+        {0} word [bp + 4096]",
+        op
+    ))
+}

@@ -52,6 +52,11 @@ pub enum Operation {
     Cmp,
     And,
     Or,
+    Mul,
+    Imul,
+    Div,
+    Idiv,
+    Not,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +72,7 @@ pub enum Destination {
     None,
     Register(Register),
     Memory(MemoryAddressExpression),
+    Accumulator(OperandSize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +166,7 @@ enum Opcode {
     ArithmeticImmWithMemReg,
     ArithmeticRegMemWithReg(ArithmeticOpcode),
     ArithmeticImmWithAccumReg(ArithmeticOpcode),
+    ArithmeticRegMemWithAccumReg,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +178,15 @@ enum ArithmeticOpcode {
     Cmp,
     And,
     Or,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArithmeticAccumOpcode {
+    Mul,
+    Imul,
+    Div,
+    Idiv,
+    Not,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,7 +202,7 @@ enum SignBit {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OperandSize {
+pub enum OperandSize {
     Word,
     Byte,
 }
@@ -266,6 +282,18 @@ impl fmt::Display for Instruction {
                 },
                 imm
             ),
+            Self {
+                op,
+                source: Source::Memory(mem_addr_expr),
+                dest: Destination::Accumulator(size),
+                ..
+            } => write!(f, "{} {} {}", op, size, mem_addr_expr),
+            Self {
+                op,
+                source,
+                dest: Destination::Accumulator(_),
+                ..
+            } => write!(f, "{} {}", op, source),
             Self {
                 op, source, dest, ..
             } => write!(f, "{} {}, {}", op, dest, source),
@@ -374,6 +402,7 @@ impl fmt::Display for Destination {
             Self::None => Ok(()),
             Self::Register(reg) => reg.fmt(f),
             Self::Memory(mem_addr_expr) => mem_addr_expr.fmt(f),
+            Self::Accumulator(_) => Ok(()),
         }
     }
 }
@@ -392,6 +421,18 @@ impl From<ArithmeticOpcode> for Operation {
     }
 }
 
+impl From<ArithmeticAccumOpcode> for Operation {
+    fn from(opcode: ArithmeticAccumOpcode) -> Self {
+        match opcode {
+            ArithmeticAccumOpcode::Mul => Self::Mul,
+            ArithmeticAccumOpcode::Imul => Self::Imul,
+            ArithmeticAccumOpcode::Div => Self::Div,
+            ArithmeticAccumOpcode::Idiv => Self::Idiv,
+            ArithmeticAccumOpcode::Not => Self::Not,
+        }
+    }
+}
+
 impl fmt::Display for Operation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -406,6 +447,11 @@ impl fmt::Display for Operation {
                 Self::Cmp => "cmp",
                 Self::And => "and",
                 Self::Or => "or",
+                Self::Mul => "mul",
+                Self::Imul => "imul",
+                Self::Div => "div",
+                Self::Idiv => "idiv",
+                Self::Not => "not",
             }
         )
     }
@@ -542,6 +588,19 @@ impl fmt::Display for Immediate {
     }
 }
 
+impl fmt::Display for OperandSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Word => "word",
+                Self::Byte => "byte",
+            }
+        )
+    }
+}
+
 impl DecodedRegisterOrMemory {
     fn register(reg: Register) -> Self {
         Self {
@@ -603,6 +662,9 @@ pub fn decode_instruction(bytes: &[u8]) -> DecodeResult<Instruction> {
         }
         Opcode::ArithmeticImmWithAccumReg(opcode) => {
             decode_instr_for_arithmetic_imm_with_accum_reg_opcode(opcode, bytes)
+        }
+        Opcode::ArithmeticRegMemWithAccumReg => {
+            decode_instr_for_arithmetic_mem_reg_with_accum_reg_opcode(bytes)
         }
     }
 }
@@ -774,6 +836,26 @@ fn decode_instr_for_arithmetic_imm_with_accum_reg_opcode(
     })
 }
 
+fn decode_instr_for_arithmetic_mem_reg_with_accum_reg_opcode(
+    bytes: &[u8],
+) -> DecodeResult<Instruction> {
+    if bytes.len() < 2 {
+        return Err(DecodeError::MissingInstructionBytes { bytes });
+    }
+    let operand_size = decode_operand_size(bytes[0]);
+    let opcode = decode_arithmetic_accum_opcode(bytes[1])?;
+    let DecodedRegisterOrMemory {
+        reg_or_mem,
+        disp_size,
+    } = decode_register_or_memory(operand_size, &bytes[1..])?;
+    Ok(Instruction {
+        op: opcode.into(),
+        source: reg_or_mem.into(),
+        dest: Destination::Accumulator(operand_size),
+        size: 2 + disp_size,
+    })
+}
+
 fn decode_register_or_memory(
     operand_size: OperandSize,
     bytes: &[u8],
@@ -807,6 +889,7 @@ fn assign_reg_and_reg_mem_to_source_and_dest(
 fn decode_opcode(byte1: u8) -> DecodeResult<'static, Opcode> {
     match byte1 & 0b11111110 {
         0b11000110 => Ok(Opcode::MovImmToRegMem),
+        0b11110110 => Ok(Opcode::ArithmeticRegMemWithAccumReg),
         _ => match byte1 & 0b11111101 {
             0b10001100 => Ok(Opcode::MovRegMemToFromSegReg),
             _ => match byte1 & 0b11111100 {
@@ -841,6 +924,17 @@ fn decode_arithmetic_opcode(byte: u8) -> DecodeResult<'static, ArithmeticOpcode>
         0b00111000 => Ok(ArithmeticOpcode::Cmp),
         0b00100000 => Ok(ArithmeticOpcode::And),
         0b00001000 => Ok(ArithmeticOpcode::Or),
+        _ => Err(DecodeError::UnknownOpcode { byte }),
+    }
+}
+
+fn decode_arithmetic_accum_opcode(byte: u8) -> DecodeResult<'static, ArithmeticAccumOpcode> {
+    match byte & 0b00111000 {
+        0b00100000 => Ok(ArithmeticAccumOpcode::Mul),
+        0b00101000 => Ok(ArithmeticAccumOpcode::Imul),
+        0b00110000 => Ok(ArithmeticAccumOpcode::Div),
+        0b00111000 => Ok(ArithmeticAccumOpcode::Idiv),
+        0b00010000 => Ok(ArithmeticAccumOpcode::Not),
         _ => Err(DecodeError::UnknownOpcode { byte }),
     }
 }
@@ -1176,6 +1270,36 @@ mod test {
         assert_eq!(
             no_error(decode_opcode(0b00001100)),
             Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Or)
+        );
+
+        assert_eq!(
+            no_error(decode_opcode(0b11110110)),
+            Opcode::ArithmeticRegMemWithAccumReg,
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b11110111)),
+            Opcode::ArithmeticRegMemWithAccumReg,
+        );
+
+        assert_eq!(
+            no_error(decode_arithmetic_accum_opcode(0b00100000)),
+            ArithmeticAccumOpcode::Mul,
+        );
+        assert_eq!(
+            no_error(decode_arithmetic_accum_opcode(0b00101000)),
+            ArithmeticAccumOpcode::Imul,
+        );
+        assert_eq!(
+            no_error(decode_arithmetic_accum_opcode(0b00110000)),
+            ArithmeticAccumOpcode::Div,
+        );
+        assert_eq!(
+            no_error(decode_arithmetic_accum_opcode(0b00111000)),
+            ArithmeticAccumOpcode::Idiv,
+        );
+        assert_eq!(
+            no_error(decode_arithmetic_accum_opcode(0b00010000)),
+            ArithmeticAccumOpcode::Not,
         );
     }
 
@@ -2145,6 +2269,112 @@ mod test {
     }
 
     #[test]
+    fn should_decode_mul_reg_mem_with_accum_reg_instructions() {
+        should_decode_arithmetic_reg_mem_with_accum_reg_instructions(0b00100000, Operation::Mul);
+    }
+
+    #[test]
+    fn should_decode_imul_reg_mem_with_accum_reg_instructions() {
+        should_decode_arithmetic_reg_mem_with_accum_reg_instructions(0b00101000, Operation::Imul);
+    }
+
+    #[test]
+    fn should_decode_div_reg_mem_with_accum_reg_instructions() {
+        should_decode_arithmetic_reg_mem_with_accum_reg_instructions(0b00110000, Operation::Div);
+    }
+
+    #[test]
+    fn should_decode_idiv_reg_mem_with_accum_reg_instructions() {
+        should_decode_arithmetic_reg_mem_with_accum_reg_instructions(0b00111000, Operation::Idiv);
+    }
+
+    #[test]
+    fn should_decode_not_reg_mem_with_accum_reg_instructions() {
+        should_decode_arithmetic_reg_mem_with_accum_reg_instructions(0b00010000, Operation::Not);
+    }
+
+    fn should_decode_arithmetic_reg_mem_with_accum_reg_instructions(
+        arithmetic_byte: u8,
+        op: Operation,
+    ) {
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b11110111,
+                0b11000010 | arithmetic_byte,
+            ])),
+            Instruction {
+                op,
+                source: WordRegister::DX.into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b11110110,
+                0b11000010 | arithmetic_byte,
+            ])),
+            Instruction {
+                op,
+                source: ByteRegister::DL.into(),
+                dest: Destination::Accumulator(OperandSize::Byte),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b11110111,
+                0b00000111 | arithmetic_byte,
+            ])),
+            Instruction {
+                op,
+                source: MemoryAddressExpression::BX.into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b11110110,
+                0b00000111 | arithmetic_byte,
+            ])),
+            Instruction {
+                op,
+                source: MemoryAddressExpression::BX.into(),
+                dest: Destination::Accumulator(OperandSize::Byte),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b11110111,
+                0b01000111 | arithmetic_byte,
+                0x7
+            ])),
+            Instruction {
+                op,
+                source: MemoryAddressExpression::BXPlus(0x7).into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b11110111,
+                0b10000111 | arithmetic_byte,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: MemoryAddressExpression::BXPlus(0xabcd).into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 4
+            }
+        );
+    }
+
+    #[test]
     fn should_fail_decoding_no_instruction() {
         assert_eq!(
             decode_instruction(&[]).unwrap_err(),
@@ -2482,6 +2712,76 @@ mod test {
             }
             .to_string(),
             "or [di + 9], byte 7"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Mul,
+                source: WordRegister::BX.into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 0
+            }
+            .to_string(),
+            "mul bx"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Mul,
+                source: MemoryAddressExpression::DIPlus(9).into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 0
+            }
+            .to_string(),
+            "mul word [di + 9]"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Mul,
+                source: MemoryAddressExpression::DIPlus(9).into(),
+                dest: Destination::Accumulator(OperandSize::Byte),
+                size: 0
+            }
+            .to_string(),
+            "mul byte [di + 9]"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Imul,
+                source: MemoryAddressExpression::DIPlus(9).into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 0
+            }
+            .to_string(),
+            "imul word [di + 9]"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Div,
+                source: MemoryAddressExpression::DIPlus(9).into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 0
+            }
+            .to_string(),
+            "div word [di + 9]"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Idiv,
+                source: MemoryAddressExpression::DIPlus(9).into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 0
+            }
+            .to_string(),
+            "idiv word [di + 9]"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Not,
+                source: MemoryAddressExpression::DIPlus(9).into(),
+                dest: Destination::Accumulator(OperandSize::Word),
+                size: 0
+            }
+            .to_string(),
+            "not word [di + 9]"
         );
     }
 }
