@@ -237,13 +237,33 @@ fn test_decoding_add_mem_reg_reg_instructions() {
 }
 
 #[test]
+fn test_decoding_adc_mem_reg_reg_instructions() {
+    test_decoding_arithmetic_mem_reg_reg_instructions("adc");
+}
+
+#[test]
 fn test_decoding_sub_mem_reg_reg_instructions() {
     test_decoding_arithmetic_mem_reg_reg_instructions("sub");
 }
 
 #[test]
+fn test_decoding_sbb_mem_reg_reg_instructions() {
+    test_decoding_arithmetic_mem_reg_reg_instructions("sbb");
+}
+
+#[test]
 fn test_decoding_cmp_mem_reg_reg_instructions() {
     test_decoding_arithmetic_mem_reg_reg_instructions("cmp");
+}
+
+#[test]
+fn test_decoding_and_mem_reg_reg_instructions() {
+    test_decoding_arithmetic_mem_reg_reg_instructions("and");
+}
+
+#[test]
+fn test_decoding_or_mem_reg_reg_instructions() {
+    test_decoding_arithmetic_mem_reg_reg_instructions("or");
 }
 
 fn test_decoding_arithmetic_mem_reg_reg_instructions(op: &str) {
@@ -267,13 +287,33 @@ fn test_decoding_add_imm_mem_reg_instructions() {
 }
 
 #[test]
+fn test_decoding_adc_imm_mem_reg_instructions() {
+    test_decoding_arithmetic_imm_mem_reg_instructions("adc");
+}
+
+#[test]
 fn test_decoding_sub_imm_mem_reg_instructions() {
     test_decoding_arithmetic_imm_mem_reg_instructions("sub");
 }
 
 #[test]
+fn test_decoding_sbb_imm_mem_reg_instructions() {
+    test_decoding_arithmetic_imm_mem_reg_instructions("sbb");
+}
+
+#[test]
 fn test_decoding_cmp_imm_mem_reg_instructions() {
     test_decoding_arithmetic_imm_mem_reg_instructions("cmp");
+}
+
+#[test]
+fn test_decoding_and_imm_mem_reg_instructions() {
+    test_decoding_arithmetic_imm_mem_reg_instructions("and");
+}
+
+#[test]
+fn test_decoding_or_imm_mem_reg_instructions() {
+    test_decoding_arithmetic_imm_mem_reg_instructions("or");
 }
 
 fn test_decoding_arithmetic_imm_mem_reg_instructions(op: &str) {
@@ -308,13 +348,33 @@ fn test_decoding_add_imm_accum_reg_instructions() {
 }
 
 #[test]
+fn test_decoding_adc_imm_accum_reg_instructions() {
+    test_decoding_arithmetic_imm_accum_reg_instructions("adc");
+}
+
+#[test]
 fn test_decoding_sub_imm_accum_reg_instructions() {
     test_decoding_arithmetic_imm_accum_reg_instructions("sub");
 }
 
 #[test]
+fn test_decoding_sbb_imm_accum_reg_instructions() {
+    test_decoding_arithmetic_imm_accum_reg_instructions("sbb");
+}
+
+#[test]
 fn test_decoding_cmp_imm_accum_reg_instructions() {
     test_decoding_arithmetic_imm_accum_reg_instructions("cmp");
+}
+
+#[test]
+fn test_decoding_and_imm_accum_reg_instructions() {
+    test_decoding_arithmetic_imm_accum_reg_instructions("and");
+}
+
+#[test]
+fn test_decoding_or_imm_accum_reg_instructions() {
+    test_decoding_arithmetic_imm_accum_reg_instructions("or");
 }
 
 fn test_decoding_arithmetic_imm_accum_reg_instructions(op: &str) {

@@ -46,8 +46,12 @@ pub struct Instruction {
 pub enum Operation {
     Mov,
     Add,
+    Adc,
     Sub,
+    Sbb,
     Cmp,
+    And,
+    Or,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,8 +165,12 @@ enum Opcode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArithmeticOpcode {
     Add,
+    Adc,
     Sub,
+    Sbb,
     Cmp,
+    And,
+    Or,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -374,8 +382,12 @@ impl From<ArithmeticOpcode> for Operation {
     fn from(opcode: ArithmeticOpcode) -> Self {
         match opcode {
             ArithmeticOpcode::Add => Self::Add,
+            ArithmeticOpcode::Adc => Self::Adc,
             ArithmeticOpcode::Sub => Self::Sub,
+            ArithmeticOpcode::Sbb => Self::Sbb,
             ArithmeticOpcode::Cmp => Self::Cmp,
+            ArithmeticOpcode::And => Self::And,
+            ArithmeticOpcode::Or => Self::Or,
         }
     }
 }
@@ -388,8 +400,12 @@ impl fmt::Display for Operation {
             match self {
                 Self::Mov => "mov",
                 Self::Add => "add",
+                Self::Adc => "adc",
                 Self::Sub => "sub",
+                Self::Sbb => "sbb",
                 Self::Cmp => "cmp",
+                Self::And => "and",
+                Self::Or => "or",
             }
         )
     }
@@ -819,8 +835,12 @@ fn decode_opcode(byte1: u8) -> DecodeResult<'static, Opcode> {
 fn decode_arithmetic_opcode(byte: u8) -> DecodeResult<'static, ArithmeticOpcode> {
     match byte & 0b00111000 {
         0b00000000 => Ok(ArithmeticOpcode::Add),
+        0b00010000 => Ok(ArithmeticOpcode::Adc),
         0b00101000 => Ok(ArithmeticOpcode::Sub),
+        0b00011000 => Ok(ArithmeticOpcode::Sbb),
         0b00111000 => Ok(ArithmeticOpcode::Cmp),
+        0b00100000 => Ok(ArithmeticOpcode::And),
+        0b00001000 => Ok(ArithmeticOpcode::Or),
         _ => Err(DecodeError::UnknownOpcode { byte }),
     }
 }
@@ -1105,6 +1125,15 @@ mod test {
         );
 
         assert_eq!(
+            no_error(decode_opcode(0b00010000)),
+            Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Adc)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00010100)),
+            Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Adc)
+        );
+
+        assert_eq!(
             no_error(decode_opcode(0b00101000)),
             Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Sub)
         );
@@ -1114,12 +1143,39 @@ mod test {
         );
 
         assert_eq!(
+            no_error(decode_opcode(0b00011000)),
+            Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Sbb)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00011100)),
+            Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Sbb)
+        );
+
+        assert_eq!(
             no_error(decode_opcode(0b00111000)),
             Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Cmp)
         );
         assert_eq!(
             no_error(decode_opcode(0b00111100)),
             Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Cmp)
+        );
+
+        assert_eq!(
+            no_error(decode_opcode(0b00100000)),
+            Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::And)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00100100)),
+            Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::And)
+        );
+
+        assert_eq!(
+            no_error(decode_opcode(0b00001000)),
+            Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Or)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00001100)),
+            Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Or)
         );
     }
 
@@ -1765,13 +1821,33 @@ mod test {
     }
 
     #[test]
+    fn should_decode_adc_reg_mem_reg_instructions() {
+        should_decode_arithmetic_reg_mem_reg_instructions(0b00010000, Operation::Adc);
+    }
+
+    #[test]
     fn should_decode_sub_reg_mem_reg_instructions() {
         should_decode_arithmetic_reg_mem_reg_instructions(0b00101000, Operation::Sub);
     }
 
     #[test]
+    fn should_decode_sbb_reg_mem_reg_instructions() {
+        should_decode_arithmetic_reg_mem_reg_instructions(0b00011000, Operation::Sbb);
+    }
+
+    #[test]
     fn should_decode_cmp_reg_mem_reg_instructions() {
         should_decode_arithmetic_reg_mem_reg_instructions(0b00111000, Operation::Cmp);
+    }
+
+    #[test]
+    fn should_decode_and_reg_mem_reg_instructions() {
+        should_decode_arithmetic_reg_mem_reg_instructions(0b00100000, Operation::And);
+    }
+
+    #[test]
+    fn should_decode_or_reg_mem_reg_instructions() {
+        should_decode_arithmetic_reg_mem_reg_instructions(0b00001000, Operation::Or);
     }
 
     #[allow(clippy::identity_op)]
@@ -1859,13 +1935,33 @@ mod test {
     }
 
     #[test]
+    fn should_decode_adc_imm_reg_mem_instructions() {
+        should_decode_arithmetic_imm_reg_mem_instructions(0b00010000, Operation::Adc);
+    }
+
+    #[test]
     fn should_decode_sub_imm_reg_mem_instructions() {
         should_decode_arithmetic_imm_reg_mem_instructions(0b00101000, Operation::Sub);
     }
 
     #[test]
+    fn should_decode_sbb_imm_reg_mem_instructions() {
+        should_decode_arithmetic_imm_reg_mem_instructions(0b00011000, Operation::Sbb);
+    }
+
+    #[test]
     fn should_decode_cmp_imm_reg_mem_instructions() {
         should_decode_arithmetic_imm_reg_mem_instructions(0b00111000, Operation::Cmp);
+    }
+
+    #[test]
+    fn should_decode_and_imm_reg_mem_instructions() {
+        should_decode_arithmetic_imm_reg_mem_instructions(0b00100000, Operation::And);
+    }
+
+    #[test]
+    fn should_decode_or_imm_reg_mem_instructions() {
+        should_decode_arithmetic_imm_reg_mem_instructions(0b00001000, Operation::Or);
     }
 
     fn should_decode_arithmetic_imm_reg_mem_instructions(arithmetic_byte: u8, op: Operation) {
@@ -1991,6 +2087,16 @@ mod test {
     }
 
     #[test]
+    fn should_decode_adc_imm_with_accum_reg_instructions() {
+        should_decode_arithmetic_imm_with_accum_reg_instructions(0b00010000, Operation::Adc);
+    }
+
+    #[test]
+    fn should_decode_sbb_imm_with_accum_reg_instructions() {
+        should_decode_arithmetic_imm_with_accum_reg_instructions(0b00011000, Operation::Sbb);
+    }
+
+    #[test]
     fn should_decode_sub_imm_with_accum_reg_instructions() {
         should_decode_arithmetic_imm_with_accum_reg_instructions(0b00101000, Operation::Sub);
     }
@@ -1998,6 +2104,16 @@ mod test {
     #[test]
     fn should_decode_cmp_imm_with_accum_reg_instructions() {
         should_decode_arithmetic_imm_with_accum_reg_instructions(0b00111000, Operation::Cmp);
+    }
+
+    #[test]
+    fn should_decode_and_imm_with_accum_reg_instructions() {
+        should_decode_arithmetic_imm_with_accum_reg_instructions(0b00100000, Operation::And);
+    }
+
+    #[test]
+    fn should_decode_or_imm_with_accum_reg_instructions() {
+        should_decode_arithmetic_imm_with_accum_reg_instructions(0b00001000, Operation::Or);
     }
 
     fn should_decode_arithmetic_imm_with_accum_reg_instructions(
@@ -2249,6 +2365,26 @@ mod test {
         );
         assert_eq!(
             &Instruction {
+                op: Operation::Adc,
+                source: Immediate::Word(420).into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "adc bp, 420"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Adc,
+                source: Immediate::Byte(7).into(),
+                dest: MemoryAddressExpression::DIPlus(9).into(),
+                size: 0
+            }
+            .to_string(),
+            "adc [di + 9], byte 7"
+        );
+        assert_eq!(
+            &Instruction {
                 op: Operation::Sub,
                 source: Immediate::Word(420).into(),
                 dest: WordRegister::BP.into(),
@@ -2269,6 +2405,26 @@ mod test {
         );
         assert_eq!(
             &Instruction {
+                op: Operation::Sbb,
+                source: Immediate::Word(420).into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "sbb bp, 420"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Sbb,
+                source: Immediate::Byte(7).into(),
+                dest: MemoryAddressExpression::DIPlus(9).into(),
+                size: 0
+            }
+            .to_string(),
+            "sbb [di + 9], byte 7"
+        );
+        assert_eq!(
+            &Instruction {
                 op: Operation::Cmp,
                 source: Immediate::Word(420).into(),
                 dest: WordRegister::BP.into(),
@@ -2286,6 +2442,46 @@ mod test {
             }
             .to_string(),
             "cmp [di + 9], byte 7"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::And,
+                source: Immediate::Word(420).into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "and bp, 420"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::And,
+                source: Immediate::Byte(7).into(),
+                dest: MemoryAddressExpression::DIPlus(9).into(),
+                size: 0
+            }
+            .to_string(),
+            "and [di + 9], byte 7"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Or,
+                source: Immediate::Word(420).into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "or bp, 420"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Or,
+                source: Immediate::Byte(7).into(),
+                dest: MemoryAddressExpression::DIPlus(9).into(),
+                size: 0
+            }
+            .to_string(),
+            "or [di + 9], byte 7"
         );
     }
 }
