@@ -230,3 +230,99 @@ fn test_decoding_mov_mem_seg_reg_instructions() {
         mov [1234], ds",
     )
 }
+
+#[test]
+fn test_decoding_add_mem_reg_reg_instructions() {
+    test_decoding_arithmetic_mem_reg_reg_instructions("add");
+}
+
+#[test]
+fn test_decoding_sub_mem_reg_reg_instructions() {
+    test_decoding_arithmetic_mem_reg_reg_instructions("sub");
+}
+
+#[test]
+fn test_decoding_cmp_mem_reg_reg_instructions() {
+    test_decoding_arithmetic_mem_reg_reg_instructions("cmp");
+}
+
+fn test_decoding_arithmetic_mem_reg_reg_instructions(op: &str) {
+    test_decoding(format!(
+        "\
+        bits 16\n\
+        {0} ax, bx\n\
+        {0} al, bh\n\
+        {0} cx, [0]\n\
+        {0} dh, [bp]\n\
+        {0} [bp + di], sp\n\
+        {0} [bp + di + 7], bp\n\
+        {0} [bp + di + 512], cl",
+        op
+    ))
+}
+
+#[test]
+fn test_decoding_add_imm_mem_reg_instructions() {
+    test_decoding_arithmetic_imm_mem_reg_instructions("add");
+}
+
+#[test]
+fn test_decoding_sub_imm_mem_reg_instructions() {
+    test_decoding_arithmetic_imm_mem_reg_instructions("sub");
+}
+
+#[test]
+fn test_decoding_cmp_imm_mem_reg_instructions() {
+    test_decoding_arithmetic_imm_mem_reg_instructions("cmp");
+}
+
+fn test_decoding_arithmetic_imm_mem_reg_instructions(op: &str) {
+    test_decoding(format!(
+        "\
+        bits 16\n\
+        {0} bx, 3\n\
+        {0} bh, 3\n\
+        {0} bx, -3\n\
+        {0} bh, -3\n\
+        {0} bx, 4096\n\
+        {0} bx, -4096\n\
+        {0} [5], byte 3\n\
+        {0} [bp], byte -3\n\
+        {0} [di + 1], byte 3\n\
+        {0} [bp + di + 512], byte -3\n\
+        {0} [5], word 3\n\
+        {0} [bp], word -3\n\
+        {0} [di + 1], word 3\n\
+        {0} [bp + di + 512], word -3\n\
+        {0} [5], word 4096\n\
+        {0} [bp], word -4096\n\
+        {0} [di + 1], word 4096\n\
+        {0} [bp + di + 512], word -4096",
+        op
+    ))
+}
+
+#[test]
+fn test_decoding_add_imm_accum_reg_instructions() {
+    test_decoding_arithmetic_imm_accum_reg_instructions("add");
+}
+
+#[test]
+fn test_decoding_sub_imm_accum_reg_instructions() {
+    test_decoding_arithmetic_imm_accum_reg_instructions("sub");
+}
+
+#[test]
+fn test_decoding_cmp_imm_accum_reg_instructions() {
+    test_decoding_arithmetic_imm_accum_reg_instructions("cmp");
+}
+
+fn test_decoding_arithmetic_imm_accum_reg_instructions(op: &str) {
+    test_decoding(format!(
+        "\
+        bits 16\n\
+        {0} al, 3\n\
+        {0} ax, 4096",
+        op
+    ))
+}

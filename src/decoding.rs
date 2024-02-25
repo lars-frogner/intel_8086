@@ -45,6 +45,9 @@ pub struct Instruction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
     Mov,
+    Add,
+    Sub,
+    Cmp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,12 +153,28 @@ enum Opcode {
     MovImmToRegMem,
     MovImmToReg,
     MovRegMemToFromSegReg,
+    ArithmeticImmWithMemReg,
+    ArithmeticRegMemWithReg(ArithmeticOpcode),
+    ArithmeticImmWithAccumReg(ArithmeticOpcode),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArithmeticOpcode {
+    Add,
+    Sub,
+    Cmp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
     SourceInRegField,
     DestInRegField,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SignBit {
+    Set,
+    NotSet,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,6 +370,16 @@ impl fmt::Display for Destination {
     }
 }
 
+impl From<ArithmeticOpcode> for Operation {
+    fn from(opcode: ArithmeticOpcode) -> Self {
+        match opcode {
+            ArithmeticOpcode::Add => Self::Add,
+            ArithmeticOpcode::Sub => Self::Sub,
+            ArithmeticOpcode::Cmp => Self::Cmp,
+        }
+    }
+}
+
 impl fmt::Display for Operation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -358,6 +387,9 @@ impl fmt::Display for Operation {
             "{}",
             match self {
                 Self::Mov => "mov",
+                Self::Add => "add",
+                Self::Sub => "sub",
+                Self::Cmp => "cmp",
             }
         )
     }
@@ -547,6 +579,15 @@ pub fn decode_instruction(bytes: &[u8]) -> DecodeResult<Instruction> {
             }
             decode_instr_for_reg_mem_to_from_seg_reg_opcode(Operation::Mov, bytes)
         }
+        Opcode::ArithmeticRegMemWithReg(opcode) => {
+            decode_instr_for_reg_mem_to_from_reg_opcode(opcode.into(), bytes)
+        }
+        Opcode::ArithmeticImmWithMemReg => {
+            decode_instr_for_arithmetic_imm_with_mem_reg_opcode(bytes)
+        }
+        Opcode::ArithmeticImmWithAccumReg(opcode) => {
+            decode_instr_for_arithmetic_imm_with_accum_reg_opcode(opcode, bytes)
+        }
     }
 }
 
@@ -671,6 +712,52 @@ fn decode_instr_for_reg_mem_to_from_seg_reg_opcode(
     })
 }
 
+fn decode_instr_for_arithmetic_imm_with_mem_reg_opcode(bytes: &[u8]) -> DecodeResult<Instruction> {
+    if bytes.len() < 3 {
+        return Err(DecodeError::MissingInstructionBytes { bytes });
+    }
+    let sign_bit = decode_sign_bit(bytes[0]);
+    let operand_size = decode_operand_size(bytes[0]);
+    let DecodedRegisterOrMemory {
+        reg_or_mem,
+        disp_size,
+    } = decode_register_or_memory(operand_size, &bytes[1..])?;
+    let imm = decode_immediate_with_sign_bit(sign_bit, operand_size, &bytes[2 + disp_size..])?;
+    let opcode = decode_arithmetic_opcode(bytes[1])?;
+    let size = match (sign_bit, operand_size) {
+        (SignBit::NotSet, OperandSize::Word) => 2 + disp_size + 2,
+        _ => 2 + disp_size + 1,
+    };
+    Ok(Instruction {
+        op: opcode.into(),
+        source: imm.into(),
+        dest: reg_or_mem.into(),
+        size,
+    })
+}
+
+fn decode_instr_for_arithmetic_imm_with_accum_reg_opcode(
+    opcode: ArithmeticOpcode,
+    bytes: &[u8],
+) -> DecodeResult<Instruction> {
+    if bytes.len() < 2 {
+        return Err(DecodeError::MissingInstructionBytes { bytes });
+    }
+    let operand_size = decode_operand_size(bytes[0]);
+    let imm = decode_immediate(operand_size, &bytes[1..])?;
+    let reg = Register::main_accumulator(operand_size);
+    let size = match operand_size {
+        OperandSize::Word => 3,
+        OperandSize::Byte => 2,
+    };
+    Ok(Instruction {
+        op: opcode.into(),
+        source: imm.into(),
+        dest: reg.into(),
+        size,
+    })
+}
+
 fn decode_register_or_memory(
     operand_size: OperandSize,
     bytes: &[u8],
@@ -709,12 +796,32 @@ fn decode_opcode(byte1: u8) -> DecodeResult<'static, Opcode> {
             _ => match byte1 & 0b11111100 {
                 0b10001000 => Ok(Opcode::MovRegMemToFromReg),
                 0b10100000 => Ok(Opcode::MovMemToFromAccumReg),
-                _ => match byte1 & 0b11110000 {
-                    0b10110000 => Ok(Opcode::MovImmToReg),
-                    _ => Err(DecodeError::UnknownOpcode { byte: byte1 }),
+                0b10000000 => Ok(Opcode::ArithmeticImmWithMemReg),
+                _ => match byte1 & 0b11000110 {
+                    0b00000100 => Ok(Opcode::ArithmeticImmWithAccumReg(decode_arithmetic_opcode(
+                        byte1,
+                    )?)),
+                    _ => match byte1 & 0b11000100 {
+                        0b00000000 => Ok(Opcode::ArithmeticRegMemWithReg(
+                            decode_arithmetic_opcode(byte1)?,
+                        )),
+                        _ => match byte1 & 0b11110000 {
+                            0b10110000 => Ok(Opcode::MovImmToReg),
+                            _ => Err(DecodeError::UnknownOpcode { byte: byte1 }),
+                        },
+                    },
                 },
             },
         },
+    }
+}
+
+fn decode_arithmetic_opcode(byte: u8) -> DecodeResult<'static, ArithmeticOpcode> {
+    match byte & 0b00111000 {
+        0b00000000 => Ok(ArithmeticOpcode::Add),
+        0b00101000 => Ok(ArithmeticOpcode::Sub),
+        0b00111000 => Ok(ArithmeticOpcode::Cmp),
+        _ => Err(DecodeError::UnknownOpcode { byte }),
     }
 }
 
@@ -723,6 +830,14 @@ fn decode_direction(byte1: u8) -> Direction {
         Direction::SourceInRegField
     } else {
         Direction::DestInRegField
+    }
+}
+
+fn decode_sign_bit(byte1: u8) -> SignBit {
+    if byte1 & 0b00000010 == 0b00000000 {
+        SignBit::NotSet
+    } else {
+        SignBit::Set
     }
 }
 
@@ -878,14 +993,28 @@ fn decode_address(bytes: &[u8]) -> DecodeResult<MemoryAddressExpression> {
 }
 
 fn decode_immediate(operand_size: OperandSize, bytes: &[u8]) -> DecodeResult<Immediate> {
-    Ok(match operand_size {
-        OperandSize::Word => {
+    decode_immediate_with_sign_bit(SignBit::NotSet, operand_size, bytes)
+}
+
+fn decode_immediate_with_sign_bit(
+    sign_bit: SignBit,
+    operand_size: OperandSize,
+    bytes: &[u8],
+) -> DecodeResult<Immediate> {
+    Ok(match (sign_bit, operand_size) {
+        (SignBit::NotSet, OperandSize::Word) => {
             if bytes.len() < 2 {
                 return Err(DecodeError::MissingInstructionBytes { bytes });
             }
             Immediate::Word(combine_low_and_high_bytes(bytes[0], bytes[1]))
         }
-        OperandSize::Byte => {
+        (SignBit::Set, OperandSize::Word) => {
+            if bytes.is_empty() {
+                return Err(DecodeError::MissingInstructionBytes { bytes });
+            }
+            Immediate::Word(sign_extend_to_16_bit(bytes[0]))
+        }
+        (_, OperandSize::Byte) => {
             if bytes.is_empty() {
                 return Err(DecodeError::MissingInstructionBytes { bytes });
             }
@@ -908,7 +1037,7 @@ mod test {
     use crate::testutil::no_error;
 
     #[test]
-    fn should_decode_mov_reg_mem_to_from_reg_opcode() {
+    fn should_decode_mov_opcodes() {
         assert_eq!(
             no_error(decode_opcode(0b10001000)),
             Opcode::MovRegMemToFromReg
@@ -925,10 +1054,6 @@ mod test {
             no_error(decode_opcode(0b10001011)),
             Opcode::MovRegMemToFromReg
         );
-    }
-
-    #[test]
-    fn should_decode_mov_mem_to_accum_reg_opcode() {
         assert_eq!(
             no_error(decode_opcode(0b10100000)),
             Opcode::MovMemToFromAccumReg
@@ -937,22 +1062,10 @@ mod test {
             no_error(decode_opcode(0b10100011)),
             Opcode::MovMemToFromAccumReg
         );
-    }
-
-    #[test]
-    fn should_decode_mov_imm_to_reg_mem_opcode() {
         assert_eq!(no_error(decode_opcode(0b11000110)), Opcode::MovImmToRegMem);
         assert_eq!(no_error(decode_opcode(0b11000111)), Opcode::MovImmToRegMem);
-    }
-
-    #[test]
-    fn should_decode_mov_imm_to_reg_opcode() {
         assert_eq!(no_error(decode_opcode(0b10110000)), Opcode::MovImmToReg);
         assert_eq!(no_error(decode_opcode(0b10111010)), Opcode::MovImmToReg);
-    }
-
-    #[test]
-    fn should_decode_mov_reg_mem_to_from_seg_reg_opcode() {
         assert_eq!(
             no_error(decode_opcode(0b10001100)),
             Opcode::MovRegMemToFromSegReg
@@ -964,12 +1077,49 @@ mod test {
     }
 
     #[test]
-    fn should_fail_decoding_unknown_opcode() {
-        let byte1 = 0b00000000;
-        let result = decode_opcode(byte1);
+    fn should_decode_arithmetic_opcodes() {
         assert_eq!(
-            result.unwrap_err(),
-            DecodeError::UnknownOpcode { byte: byte1 }
+            no_error(decode_opcode(0b10000000)),
+            Opcode::ArithmeticImmWithMemReg
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b10000011)),
+            Opcode::ArithmeticImmWithMemReg
+        );
+
+        assert_eq!(
+            no_error(decode_opcode(0b00000000)),
+            Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Add)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00000011)),
+            Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Add)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00000100)),
+            Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Add)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00000101)),
+            Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Add)
+        );
+
+        assert_eq!(
+            no_error(decode_opcode(0b00101000)),
+            Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Sub)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00101100)),
+            Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Sub)
+        );
+
+        assert_eq!(
+            no_error(decode_opcode(0b00111000)),
+            Opcode::ArithmeticRegMemWithReg(ArithmeticOpcode::Cmp)
+        );
+        assert_eq!(
+            no_error(decode_opcode(0b00111100)),
+            Opcode::ArithmeticImmWithAccumReg(ArithmeticOpcode::Cmp)
         );
     }
 
@@ -1610,6 +1760,275 @@ mod test {
     }
 
     #[test]
+    fn should_decode_add_reg_mem_reg_instructions() {
+        should_decode_arithmetic_reg_mem_reg_instructions(0b00000000, Operation::Add);
+    }
+
+    #[test]
+    fn should_decode_sub_reg_mem_reg_instructions() {
+        should_decode_arithmetic_reg_mem_reg_instructions(0b00101000, Operation::Sub);
+    }
+
+    #[test]
+    fn should_decode_cmp_reg_mem_reg_instructions() {
+        should_decode_arithmetic_reg_mem_reg_instructions(0b00111000, Operation::Cmp);
+    }
+
+    #[allow(clippy::identity_op)]
+    fn should_decode_arithmetic_reg_mem_reg_instructions(arithmetic_byte: u8, op: Operation) {
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b00000001 | arithmetic_byte,
+                0b11010111
+            ])),
+            Instruction {
+                op,
+                source: WordRegister::DX.into(),
+                dest: WordRegister::DI.into(),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b00000011 | arithmetic_byte,
+                0b11010111
+            ])),
+            Instruction {
+                op,
+                source: WordRegister::DI.into(),
+                dest: WordRegister::DX.into(),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b00000000 | arithmetic_byte,
+                0b11010111
+            ])),
+            Instruction {
+                op,
+                source: ByteRegister::DL.into(),
+                dest: ByteRegister::BH.into(),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b00000001 | arithmetic_byte,
+                0b00010101
+            ])),
+            Instruction {
+                op,
+                source: WordRegister::DX.into(),
+                dest: MemoryAddressExpression::DI.into(),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b00000001 | arithmetic_byte,
+                0b01010101,
+                0x7
+            ])),
+            Instruction {
+                op,
+                source: WordRegister::DX.into(),
+                dest: MemoryAddressExpression::DIPlus(0x7).into(),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b00000001 | arithmetic_byte,
+                0b10010101,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: WordRegister::DX.into(),
+                dest: MemoryAddressExpression::DIPlus(0xabcd).into(),
+                size: 4
+            }
+        );
+    }
+
+    #[test]
+    fn should_decode_add_imm_reg_mem_instructions() {
+        should_decode_arithmetic_imm_reg_mem_instructions(0b00000000, Operation::Add);
+    }
+
+    #[test]
+    fn should_decode_sub_imm_reg_mem_instructions() {
+        should_decode_arithmetic_imm_reg_mem_instructions(0b00101000, Operation::Sub);
+    }
+
+    #[test]
+    fn should_decode_cmp_imm_reg_mem_instructions() {
+        should_decode_arithmetic_imm_reg_mem_instructions(0b00111000, Operation::Cmp);
+    }
+
+    fn should_decode_arithmetic_imm_reg_mem_instructions(arithmetic_byte: u8, op: Operation) {
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b10000001,
+                0b11000111 | arithmetic_byte,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Word(0xabcd).into(),
+                dest: WordRegister::DI.into(),
+                size: 4
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b10000011,
+                0b11000111 | arithmetic_byte,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Word(sign_extend_to_16_bit(0xab)).into(),
+                dest: WordRegister::DI.into(),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b10000000,
+                0b11000111 | arithmetic_byte,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Byte(0xab).into(),
+                dest: ByteRegister::BH.into(),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b10000010,
+                0b11000111 | arithmetic_byte,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Byte(0xab).into(),
+                dest: ByteRegister::BH.into(),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b10000001,
+                0b10000111 | arithmetic_byte,
+                0xef,
+                0xcd,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Word(0xabcd).into(),
+                dest: MemoryAddressExpression::BXPlus(0xcdef).into(),
+                size: 6
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b10000011,
+                0b10000111 | arithmetic_byte,
+                0xef,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Word(sign_extend_to_16_bit(0xab)).into(),
+                dest: MemoryAddressExpression::BXPlus(0xcdef).into(),
+                size: 5
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b10000000,
+                0b10000111 | arithmetic_byte,
+                0xef,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Byte(0xab).into(),
+                dest: MemoryAddressExpression::BXPlus(0xcdef).into(),
+                size: 5
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b10000010,
+                0b10000111 | arithmetic_byte,
+                0xef,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Byte(0xab).into(),
+                dest: MemoryAddressExpression::BXPlus(0xcdef).into(),
+                size: 5
+            }
+        );
+    }
+
+    #[test]
+    fn should_decode_add_imm_with_accum_reg_instructions() {
+        should_decode_arithmetic_imm_with_accum_reg_instructions(0b00000000, Operation::Add);
+    }
+
+    #[test]
+    fn should_decode_sub_imm_with_accum_reg_instructions() {
+        should_decode_arithmetic_imm_with_accum_reg_instructions(0b00101000, Operation::Sub);
+    }
+
+    #[test]
+    fn should_decode_cmp_imm_with_accum_reg_instructions() {
+        should_decode_arithmetic_imm_with_accum_reg_instructions(0b00111000, Operation::Cmp);
+    }
+
+    fn should_decode_arithmetic_imm_with_accum_reg_instructions(
+        arithmetic_byte: u8,
+        op: Operation,
+    ) {
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b00000101 | arithmetic_byte,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: Immediate::Word(0xabcd).into(),
+                dest: WordRegister::AX.into(),
+                size: 3
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b00000100 | arithmetic_byte, 0x7])),
+            Instruction {
+                op,
+                source: Immediate::Byte(0x7).into(),
+                dest: ByteRegister::AL.into(),
+                size: 2
+            }
+        );
+    }
+
+    #[test]
     fn should_fail_decoding_no_instruction() {
         assert_eq!(
             decode_instruction(&[]).unwrap_err(),
@@ -1623,15 +2042,6 @@ mod test {
         assert_eq!(
             decode_instruction(bytes).unwrap_err(),
             DecodeError::MissingInstructionBytes { bytes }
-        );
-    }
-
-    #[test]
-    fn should_fail_decoding_instruction_with_unknown_opcode() {
-        let bytes = &[0b00000011, 0b11000011];
-        assert_eq!(
-            decode_instruction(bytes).unwrap_err(),
-            DecodeError::UnknownOpcode { byte: bytes[0] }
         );
     }
 
@@ -1712,7 +2122,7 @@ mod test {
     }
 
     #[test]
-    fn should_display_mov_reg_reg_instructions() {
+    fn should_display_mov_instructions() {
         assert_eq!(
             &Instruction {
                 op: Operation::Mov,
@@ -1753,10 +2163,6 @@ mod test {
             .to_string(),
             "mov dl, ch"
         );
-    }
-
-    #[test]
-    fn should_display_mov_reg_mem_instructions() {
         assert_eq!(
             &Instruction {
                 op: Operation::Mov,
@@ -1777,10 +2183,6 @@ mod test {
             .to_string(),
             "mov ax, [256]"
         );
-    }
-
-    #[test]
-    fn should_display_mov_imm_mem_instructions() {
         assert_eq!(
             &Instruction {
                 op: Operation::Mov,
@@ -1801,10 +2203,6 @@ mod test {
             .to_string(),
             "mov [di + 9], byte 7"
         );
-    }
-
-    #[test]
-    fn should_display_mov_imm_reg_instructions() {
         assert_eq!(
             &Instruction {
                 op: Operation::Mov,
@@ -1824,6 +2222,70 @@ mod test {
             }
             .to_string(),
             "mov cl, 42"
+        );
+    }
+
+    #[test]
+    fn should_display_arithmetic_instructions() {
+        assert_eq!(
+            &Instruction {
+                op: Operation::Add,
+                source: Immediate::Word(420).into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "add bp, 420"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Add,
+                source: Immediate::Byte(7).into(),
+                dest: MemoryAddressExpression::DIPlus(9).into(),
+                size: 0
+            }
+            .to_string(),
+            "add [di + 9], byte 7"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Sub,
+                source: Immediate::Word(420).into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "sub bp, 420"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Sub,
+                source: Immediate::Byte(7).into(),
+                dest: MemoryAddressExpression::DIPlus(9).into(),
+                size: 0
+            }
+            .to_string(),
+            "sub [di + 9], byte 7"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Cmp,
+                source: Immediate::Word(420).into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "cmp bp, 420"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Cmp,
+                source: Immediate::Byte(7).into(),
+                dest: MemoryAddressExpression::DIPlus(9).into(),
+                size: 0
+            }
+            .to_string(),
+            "cmp [di + 9], byte 7"
         );
     }
 }
