@@ -57,6 +57,13 @@ pub enum Operation {
     Div,
     Idiv,
     Not,
+    Shl,
+    Shr,
+    Sar,
+    Rol,
+    Ror,
+    Rcl,
+    Rcr,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,14 +71,15 @@ pub enum Source {
     None,
     Immediate(Immediate),
     Register(Register),
-    Memory(MemoryAddressExpression),
+    Memory(MemoryRegion),
+    ShiftCount(ShiftCount),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Destination {
     None,
     Register(Register),
-    Memory(MemoryAddressExpression),
+    Memory(MemoryRegion),
     Accumulator(OperandSize),
 }
 
@@ -131,6 +139,12 @@ pub enum SegmentRegister {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryRegion {
+    address: MemoryAddressExpression,
+    size: OperandSize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryAddressExpression {
     Direct(u16),
     BXPlusSI,
@@ -167,6 +181,7 @@ enum Opcode {
     ArithmeticRegMemWithReg(ArithmeticOpcode),
     ArithmeticImmWithAccumReg(ArithmeticOpcode),
     ArithmeticRegMemWithAccumReg,
+    Shift,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,6 +193,17 @@ enum ArithmeticOpcode {
     Cmp,
     And,
     Or,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShiftOpcode {
+    Shl,
+    Shr,
+    Sar,
+    Rol,
+    Ror,
+    Rcl,
+    Rcr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +234,12 @@ pub enum OperandSize {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShiftCount {
+    One,
+    InCLReg,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Register,
     Memory(MemoryMode),
@@ -230,7 +262,7 @@ struct DecodedRegisterOrMemory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RegisterOrMemory {
     Register(Register),
-    Memory(MemoryAddressExpression),
+    Memory(MemoryRegion),
 }
 
 impl fmt::Display for Program {
@@ -266,28 +298,34 @@ impl fmt::Display for Instruction {
                 dest: Destination::None,
                 ..
             } => write!(f, "{} {}", op, source),
+            // Self {
+            //     op,
+            //     source: Source::Immediate(imm),
+            //     dest: Destination::Memory(mem),
+            //     ..
+            // } => write!(
+            //     f,
+            //     "{} {}, {} {}",
+            //     op,
+            //     mem,
+            //     match imm {
+            //         Immediate::Word(_) => "word",
+            //         Immediate::Byte(_) => "byte",
+            //     },
+            //     imm
+            // ),
             Self {
                 op,
-                source: Source::Immediate(imm),
-                dest: Destination::Memory(mem_addr_expr),
-                ..
-            } => write!(
-                f,
-                "{} {}, {} {}",
-                op,
-                mem_addr_expr,
-                match imm {
-                    Immediate::Word(_) => "word",
-                    Immediate::Byte(_) => "byte",
-                },
-                imm
-            ),
-            Self {
-                op,
-                source: Source::Memory(mem_addr_expr),
+                source: Source::Memory(mem),
                 dest: Destination::Accumulator(size),
                 ..
-            } => write!(f, "{} {} {}", op, size, mem_addr_expr),
+            } => write!(f, "{} {} {}", op, size, mem),
+            Self {
+                op,
+                source: source @ Source::Immediate(_) | source @ Source::ShiftCount(_),
+                dest: Destination::Memory(mem),
+                ..
+            } => write!(f, "{} {} {}, {}", op, mem.size, mem, source),
             Self {
                 op,
                 source,
@@ -325,9 +363,18 @@ impl From<SegmentRegister> for Source {
     }
 }
 
+impl From<MemoryRegion> for Source {
+    fn from(region: MemoryRegion) -> Self {
+        Self::Memory(region)
+    }
+}
+
 impl From<MemoryAddressExpression> for Source {
     fn from(mem_addr_expr: MemoryAddressExpression) -> Self {
-        Self::Memory(mem_addr_expr)
+        Self::Memory(MemoryRegion {
+            address: mem_addr_expr,
+            size: OperandSize::Byte,
+        })
     }
 }
 
@@ -335,7 +382,7 @@ impl From<RegisterOrMemory> for Source {
     fn from(reg_or_mem: RegisterOrMemory) -> Self {
         match reg_or_mem {
             RegisterOrMemory::Register(reg) => reg.into(),
-            RegisterOrMemory::Memory(mem_addr_expr) => mem_addr_expr.into(),
+            RegisterOrMemory::Memory(mem) => mem.into(),
         }
     }
 }
@@ -346,6 +393,12 @@ impl From<Immediate> for Source {
     }
 }
 
+impl From<ShiftCount> for Source {
+    fn from(count: ShiftCount) -> Self {
+        Self::ShiftCount(count)
+    }
+}
+
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -353,6 +406,7 @@ impl fmt::Display for Source {
             Self::Immediate(imm) => imm.fmt(f),
             Self::Register(reg) => reg.fmt(f),
             Self::Memory(mem_addr_expr) => mem_addr_expr.fmt(f),
+            Self::ShiftCount(count) => count.fmt(f),
         }
     }
 }
@@ -381,9 +435,18 @@ impl From<SegmentRegister> for Destination {
     }
 }
 
+impl From<MemoryRegion> for Destination {
+    fn from(region: MemoryRegion) -> Self {
+        Self::Memory(region)
+    }
+}
+
 impl From<MemoryAddressExpression> for Destination {
     fn from(mem_addr_expr: MemoryAddressExpression) -> Self {
-        Self::Memory(mem_addr_expr)
+        Self::Memory(MemoryRegion {
+            address: mem_addr_expr,
+            size: OperandSize::Byte,
+        })
     }
 }
 
@@ -391,7 +454,7 @@ impl From<RegisterOrMemory> for Destination {
     fn from(reg_or_mem: RegisterOrMemory) -> Self {
         match reg_or_mem {
             RegisterOrMemory::Register(reg) => reg.into(),
-            RegisterOrMemory::Memory(mem_addr_expr) => mem_addr_expr.into(),
+            RegisterOrMemory::Memory(mem) => mem.into(),
         }
     }
 }
@@ -433,6 +496,20 @@ impl From<ArithmeticAccumOpcode> for Operation {
     }
 }
 
+impl From<ShiftOpcode> for Operation {
+    fn from(opcode: ShiftOpcode) -> Self {
+        match opcode {
+            ShiftOpcode::Shl => Self::Shl,
+            ShiftOpcode::Shr => Self::Shr,
+            ShiftOpcode::Sar => Self::Sar,
+            ShiftOpcode::Rol => Self::Rol,
+            ShiftOpcode::Ror => Self::Ror,
+            ShiftOpcode::Rcl => Self::Rcl,
+            ShiftOpcode::Rcr => Self::Rcr,
+        }
+    }
+}
+
 impl fmt::Display for Operation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -452,6 +529,13 @@ impl fmt::Display for Operation {
                 Self::Div => "div",
                 Self::Idiv => "idiv",
                 Self::Not => "not",
+                Self::Shl => "shl",
+                Self::Shr => "shr",
+                Self::Sar => "sar",
+                Self::Rol => "rol",
+                Self::Ror => "ror",
+                Self::Rcl => "rcl",
+                Self::Rcr => "rcr",
             }
         )
     }
@@ -529,6 +613,18 @@ impl fmt::Display for SegmentRegister {
     }
 }
 
+impl MemoryRegion {
+    fn new(address: MemoryAddressExpression, size: OperandSize) -> Self {
+        Self { address, size }
+    }
+}
+
+impl fmt::Display for MemoryRegion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.address.fmt(f)
+    }
+}
+
 impl MemoryAddressExpression {
     fn displacement_size(&self, mode: MemoryMode) -> usize {
         match mode {
@@ -588,6 +684,28 @@ impl fmt::Display for Immediate {
     }
 }
 
+impl fmt::Display for ShiftCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::One => "1",
+                Self::InCLReg => "cl",
+            }
+        )
+    }
+}
+
+impl OperandSize {
+    fn n_bytes(&self) -> usize {
+        match self {
+            Self::Word => 2,
+            Self::Byte => 1,
+        }
+    }
+}
+
 impl fmt::Display for OperandSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -609,10 +727,10 @@ impl DecodedRegisterOrMemory {
         }
     }
 
-    fn memory(mem_addr_expr: MemoryAddressExpression, mode: MemoryMode) -> Self {
+    fn memory(mem: MemoryRegion, mode: MemoryMode) -> Self {
         Self {
-            reg_or_mem: RegisterOrMemory::Memory(mem_addr_expr),
-            disp_size: mem_addr_expr.displacement_size(mode),
+            reg_or_mem: RegisterOrMemory::Memory(mem),
+            disp_size: mem.address.displacement_size(mode),
         }
     }
 }
@@ -666,6 +784,7 @@ pub fn decode_instruction(bytes: &[u8]) -> DecodeResult<Instruction> {
         Opcode::ArithmeticRegMemWithAccumReg => {
             decode_instr_for_arithmetic_mem_reg_with_accum_reg_opcode(bytes)
         }
+        Opcode::Shift => decode_instr_for_shift_opcode(bytes),
     }
 }
 
@@ -702,10 +821,10 @@ fn decode_instr_for_mem_to_from_accum_reg_opcode(
     let direction = decode_direction(bytes[0]);
     let operand_size = decode_operand_size(bytes[0]);
     let reg = Register::main_accumulator(operand_size);
-    let mem_addr = decode_address(&bytes[1..])?;
+    let mem = MemoryRegion::new(decode_address(&bytes[1..])?, operand_size);
     let (source, dest) = match direction {
-        Direction::SourceInRegField => (mem_addr.into(), reg.into()), // d = 0
-        Direction::DestInRegField => (reg.into(), mem_addr.into()),   // d = 1
+        Direction::SourceInRegField => (mem.into(), reg.into()), // d = 0
+        Direction::DestInRegField => (reg.into(), mem.into()),   // d = 1
     };
     Ok(Instruction {
         op,
@@ -728,12 +847,7 @@ fn decode_instr_for_imm_to_reg_mem_opcode(
         disp_size,
     } = decode_register_or_memory(operand_size, &bytes[1..])?;
     let imm = decode_immediate(operand_size, &bytes[2 + disp_size..])?;
-    let size = 2
-        + disp_size
-        + match operand_size {
-            OperandSize::Word => 2,
-            OperandSize::Byte => 1,
-        };
+    let size = 2 + disp_size + operand_size.n_bytes();
     Ok(Instruction {
         op,
         source: imm.into(),
@@ -756,10 +870,7 @@ fn decode_instr_for_imm_to_reg_opcode(op: Operation, bytes: &[u8]) -> DecodeResu
     let operand_size = decode_imm_to_reg_operand_size(bytes[0]);
     let reg = decode_last_register(operand_size, bytes[0]);
     let imm = decode_immediate(operand_size, &bytes[1..])?;
-    let size = match operand_size {
-        OperandSize::Word => 3,
-        OperandSize::Byte => 2,
-    };
+    let size = 1 + operand_size.n_bytes();
     Ok(Instruction {
         op,
         source: imm.into(),
@@ -824,10 +935,7 @@ fn decode_instr_for_arithmetic_imm_with_accum_reg_opcode(
     let operand_size = decode_operand_size(bytes[0]);
     let imm = decode_immediate(operand_size, &bytes[1..])?;
     let reg = Register::main_accumulator(operand_size);
-    let size = match operand_size {
-        OperandSize::Word => 3,
-        OperandSize::Byte => 2,
-    };
+    let size = 1 + operand_size.n_bytes();
     Ok(Instruction {
         op: opcode.into(),
         source: imm.into(),
@@ -856,6 +964,25 @@ fn decode_instr_for_arithmetic_mem_reg_with_accum_reg_opcode(
     })
 }
 
+fn decode_instr_for_shift_opcode(bytes: &[u8]) -> DecodeResult<Instruction> {
+    if bytes.len() < 2 {
+        return Err(DecodeError::MissingInstructionBytes { bytes });
+    }
+    let operand_size = decode_operand_size(bytes[0]);
+    let count = decode_shift_count(bytes[0]);
+    let opcode = decode_shift_opcode(bytes[1])?;
+    let DecodedRegisterOrMemory {
+        reg_or_mem,
+        disp_size,
+    } = decode_register_or_memory(operand_size, &bytes[1..])?;
+    Ok(Instruction {
+        op: opcode.into(),
+        source: count.into(),
+        dest: reg_or_mem.into(),
+        size: 2 + disp_size,
+    })
+}
+
 fn decode_register_or_memory(
     operand_size: OperandSize,
     bytes: &[u8],
@@ -869,7 +996,10 @@ fn decode_register_or_memory(
             DecodedRegisterOrMemory::register(decode_last_register(operand_size, bytes[0]))
         }
         Mode::Memory(mem_mode) => DecodedRegisterOrMemory::memory(
-            decode_memory_address_expression(mem_mode, bytes[0], &bytes[1..])?,
+            MemoryRegion {
+                address: decode_memory_address_expression(mem_mode, bytes[0], &bytes[1..])?,
+                size: operand_size,
+            },
             mem_mode,
         ),
     })
@@ -896,6 +1026,7 @@ fn decode_opcode(byte1: u8) -> DecodeResult<'static, Opcode> {
                 0b10001000 => Ok(Opcode::MovRegMemToFromReg),
                 0b10100000 => Ok(Opcode::MovMemToFromAccumReg),
                 0b10000000 => Ok(Opcode::ArithmeticImmWithMemReg),
+                0b11010000 => Ok(Opcode::Shift),
                 _ => match byte1 & 0b11000110 {
                     0b00000100 => Ok(Opcode::ArithmeticImmWithAccumReg(decode_arithmetic_opcode(
                         byte1,
@@ -939,6 +1070,19 @@ fn decode_arithmetic_accum_opcode(byte: u8) -> DecodeResult<'static, ArithmeticA
     }
 }
 
+fn decode_shift_opcode(byte: u8) -> DecodeResult<'static, ShiftOpcode> {
+    match byte & 0b00111000 {
+        0b00100000 => Ok(ShiftOpcode::Shl),
+        0b00101000 => Ok(ShiftOpcode::Shr),
+        0b00111000 => Ok(ShiftOpcode::Sar),
+        0b00000000 => Ok(ShiftOpcode::Rol),
+        0b00001000 => Ok(ShiftOpcode::Ror),
+        0b00010000 => Ok(ShiftOpcode::Rcl),
+        0b00011000 => Ok(ShiftOpcode::Rcr),
+        _ => Err(DecodeError::UnknownOpcode { byte }),
+    }
+}
+
 fn decode_direction(byte1: u8) -> Direction {
     if byte1 & 0b00000010 == 0b00000000 {
         Direction::SourceInRegField
@@ -952,6 +1096,14 @@ fn decode_sign_bit(byte1: u8) -> SignBit {
         SignBit::NotSet
     } else {
         SignBit::Set
+    }
+}
+
+fn decode_shift_count(byte1: u8) -> ShiftCount {
+    if byte1 & 0b00000010 == 0b00000000 {
+        ShiftCount::One
+    } else {
+        ShiftCount::InCLReg
     }
 }
 
@@ -1304,11 +1456,34 @@ mod test {
     }
 
     #[test]
+    fn should_decode_shift_opcodes() {
+        assert_eq!(no_error(decode_opcode(0b11010000)), Opcode::Shift);
+        assert_eq!(no_error(decode_opcode(0b11010011)), Opcode::Shift);
+
+        assert_eq!(no_error(decode_shift_opcode(0b00100000)), ShiftOpcode::Shl);
+        assert_eq!(no_error(decode_shift_opcode(0b01100100)), ShiftOpcode::Shl);
+        assert_eq!(no_error(decode_shift_opcode(0b00101000)), ShiftOpcode::Shr);
+        assert_eq!(no_error(decode_shift_opcode(0b00111000)), ShiftOpcode::Sar);
+        assert_eq!(no_error(decode_shift_opcode(0b00000000)), ShiftOpcode::Rol);
+        assert_eq!(no_error(decode_shift_opcode(0b00001000)), ShiftOpcode::Ror);
+        assert_eq!(no_error(decode_shift_opcode(0b00010000)), ShiftOpcode::Rcl);
+        assert_eq!(no_error(decode_shift_opcode(0b00011000)), ShiftOpcode::Rcr);
+    }
+
+    #[test]
     fn should_decode_direction_bit() {
         assert_eq!(decode_direction(0b00000000), Direction::SourceInRegField);
         assert_eq!(decode_direction(0b00000010), Direction::DestInRegField);
         assert_eq!(decode_direction(0b00010000), Direction::SourceInRegField);
         assert_eq!(decode_direction(0b00000011), Direction::DestInRegField);
+    }
+
+    #[test]
+    fn should_decode_shift_count() {
+        assert_eq!(decode_shift_count(0b00000000), ShiftCount::One);
+        assert_eq!(decode_shift_count(0b00000101), ShiftCount::One);
+        assert_eq!(decode_shift_count(0b00000010), ShiftCount::InCLReg);
+        assert_eq!(decode_shift_count(0b00000111), ShiftCount::InCLReg);
     }
 
     #[test]
@@ -1650,7 +1825,8 @@ mod test {
             no_error(decode_instruction(&[0b10001011, 0b00011000])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::BXPlusSI.into(),
+                source: MemoryRegion::new(MemoryAddressExpression::BXPlusSI, OperandSize::Word)
+                    .into(),
                 dest: WordRegister::BX.into(),
                 size: 2
             }
@@ -1659,7 +1835,7 @@ mod test {
             no_error(decode_instruction(&[0b10001011, 0b00000100])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::SI.into(),
+                source: MemoryRegion::new(MemoryAddressExpression::SI, OperandSize::Word).into(),
                 dest: WordRegister::AX.into(),
                 size: 2
             }
@@ -1668,7 +1844,7 @@ mod test {
             no_error(decode_instruction(&[0b10001010, 0b00000100])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::SI.into(),
+                source: MemoryRegion::new(MemoryAddressExpression::SI, OperandSize::Byte).into(),
                 dest: ByteRegister::AL.into(),
                 size: 2
             }
@@ -1678,7 +1854,7 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: WordRegister::AX.into(),
-                dest: MemoryAddressExpression::SI.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::SI, OperandSize::Word).into(),
                 size: 2
             }
         );
@@ -1686,7 +1862,8 @@ mod test {
             no_error(decode_instruction(&[0b10001011, 0b01000110, 3])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::BPPlus(3).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::BPPlus(3), OperandSize::Word)
+                    .into(),
                 dest: WordRegister::AX.into(),
                 size: 3
             }
@@ -1695,7 +1872,11 @@ mod test {
             no_error(decode_instruction(&[0b10001011, 0b10000110, 0xcd, 0xab])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::BPPlus(0xabcd).into(),
+                source: MemoryRegion::new(
+                    MemoryAddressExpression::BPPlus(0xabcd),
+                    OperandSize::Word
+                )
+                .into(),
                 dest: WordRegister::AX.into(),
                 size: 4
             }
@@ -1704,7 +1885,11 @@ mod test {
             no_error(decode_instruction(&[0b10001011, 0b00000110, 0xcd, 0xab])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::Direct(0xabcd).into(),
+                source: MemoryRegion::new(
+                    MemoryAddressExpression::Direct(0xabcd),
+                    OperandSize::Word
+                )
+                .into(),
                 dest: WordRegister::AX.into(),
                 size: 4
             }
@@ -1717,7 +1902,11 @@ mod test {
             no_error(decode_instruction(&[0b10100001, 0xcd, 0xab])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::Direct(0xabcd).into(),
+                source: MemoryRegion::new(
+                    MemoryAddressExpression::Direct(0xabcd),
+                    OperandSize::Word
+                )
+                .into(),
                 dest: WordRegister::AX.into(),
                 size: 3
             }
@@ -1727,7 +1916,8 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: WordRegister::AX.into(),
-                dest: MemoryAddressExpression::Direct(0xabcd).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::Direct(0xabcd), OperandSize::Word)
+                    .into(),
                 size: 3
             }
         );
@@ -1735,7 +1925,11 @@ mod test {
             no_error(decode_instruction(&[0b10100000, 0xcd, 0xab])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::Direct(0xabcd).into(),
+                source: MemoryRegion::new(
+                    MemoryAddressExpression::Direct(0xabcd),
+                    OperandSize::Byte
+                )
+                .into(),
                 dest: ByteRegister::AL.into(),
                 size: 3
             }
@@ -1749,7 +1943,7 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: Immediate::Word(0xabcd).into(),
-                dest: MemoryAddressExpression::SI.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::SI, OperandSize::Word).into(),
                 size: 4
             }
         );
@@ -1758,7 +1952,7 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: Immediate::Byte(0xcd).into(),
-                dest: MemoryAddressExpression::SI.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::SI, OperandSize::Byte).into(),
                 size: 3
             }
         );
@@ -1769,7 +1963,8 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: Immediate::Word(0xabcd).into(),
-                dest: MemoryAddressExpression::BXPlus(0x56).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BXPlus(0x56), OperandSize::Word)
+                    .into(),
                 size: 5
             }
         );
@@ -1778,7 +1973,8 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: Immediate::Byte(0xab).into(),
-                dest: MemoryAddressExpression::BXPlus(0x56).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BXPlus(0x56), OperandSize::Byte)
+                    .into(),
                 size: 4
             }
         );
@@ -1789,7 +1985,8 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: Immediate::Word(0x89ab).into(),
-                dest: MemoryAddressExpression::BPPlus(0xcdef).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BPPlus(0xcdef), OperandSize::Word)
+                    .into(),
                 size: 6
             }
         );
@@ -1800,7 +1997,8 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: Immediate::Byte(0xab).into(),
-                dest: MemoryAddressExpression::BPPlus(0xcdef).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BPPlus(0xcdef), OperandSize::Byte)
+                    .into(),
                 size: 5
             }
         );
@@ -1811,7 +2009,8 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: Immediate::Word(0x89ab).into(),
-                dest: MemoryAddressExpression::Direct(0xcdef).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::Direct(0xcdef), OperandSize::Word)
+                    .into(),
                 size: 6
             }
         );
@@ -1822,7 +2021,8 @@ mod test {
             Instruction {
                 op: Operation::Mov,
                 source: Immediate::Byte(0xab).into(),
-                dest: MemoryAddressExpression::Direct(0xcdef).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::Direct(0xcdef), OperandSize::Byte)
+                    .into(),
                 size: 5
             }
         );
@@ -1914,7 +2114,7 @@ mod test {
             no_error(decode_instruction(&[0b10001110, 0b00010111])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::BX.into(),
+                source: MemoryRegion::new(MemoryAddressExpression::BX, OperandSize::Word).into(),
                 dest: SegmentRegister::SS.into(),
                 size: 2
             }
@@ -1923,7 +2123,8 @@ mod test {
             no_error(decode_instruction(&[0b10001110, 0b01010101, 0x7])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::DIPlus(0x7).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::DIPlus(0x7), OperandSize::Word)
+                    .into(),
                 dest: SegmentRegister::SS.into(),
                 size: 3
             }
@@ -1932,7 +2133,11 @@ mod test {
             no_error(decode_instruction(&[0b10001110, 0b10010101, 0xcd, 0xab])),
             Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::DIPlus(0xabcd).into(),
+                source: MemoryRegion::new(
+                    MemoryAddressExpression::DIPlus(0xabcd),
+                    OperandSize::Word
+                )
+                .into(),
                 dest: SegmentRegister::SS.into(),
                 size: 4
             }
@@ -2020,7 +2225,7 @@ mod test {
             Instruction {
                 op,
                 source: WordRegister::DX.into(),
-                dest: MemoryAddressExpression::DI.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DI, OperandSize::Word).into(),
                 size: 2
             }
         );
@@ -2033,7 +2238,8 @@ mod test {
             Instruction {
                 op,
                 source: WordRegister::DX.into(),
-                dest: MemoryAddressExpression::DIPlus(0x7).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(0x7), OperandSize::Word)
+                    .into(),
                 size: 3
             }
         );
@@ -2047,7 +2253,8 @@ mod test {
             Instruction {
                 op,
                 source: WordRegister::DX.into(),
-                dest: MemoryAddressExpression::DIPlus(0xabcd).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(0xabcd), OperandSize::Word)
+                    .into(),
                 size: 4
             }
         );
@@ -2154,7 +2361,8 @@ mod test {
             Instruction {
                 op,
                 source: Immediate::Word(0xabcd).into(),
-                dest: MemoryAddressExpression::BXPlus(0xcdef).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BXPlus(0xcdef), OperandSize::Word)
+                    .into(),
                 size: 6
             }
         );
@@ -2169,7 +2377,8 @@ mod test {
             Instruction {
                 op,
                 source: Immediate::Word(sign_extend_to_16_bit(0xab)).into(),
-                dest: MemoryAddressExpression::BXPlus(0xcdef).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BXPlus(0xcdef), OperandSize::Word)
+                    .into(),
                 size: 5
             }
         );
@@ -2184,7 +2393,8 @@ mod test {
             Instruction {
                 op,
                 source: Immediate::Byte(0xab).into(),
-                dest: MemoryAddressExpression::BXPlus(0xcdef).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BXPlus(0xcdef), OperandSize::Byte)
+                    .into(),
                 size: 5
             }
         );
@@ -2199,7 +2409,8 @@ mod test {
             Instruction {
                 op,
                 source: Immediate::Byte(0xab).into(),
-                dest: MemoryAddressExpression::BXPlus(0xcdef).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BXPlus(0xcdef), OperandSize::Byte)
+                    .into(),
                 size: 5
             }
         );
@@ -2328,7 +2539,7 @@ mod test {
             ])),
             Instruction {
                 op,
-                source: MemoryAddressExpression::BX.into(),
+                source: MemoryRegion::new(MemoryAddressExpression::BX, OperandSize::Word).into(),
                 dest: Destination::Accumulator(OperandSize::Word),
                 size: 2
             }
@@ -2340,7 +2551,7 @@ mod test {
             ])),
             Instruction {
                 op,
-                source: MemoryAddressExpression::BX.into(),
+                source: MemoryRegion::new(MemoryAddressExpression::BX, OperandSize::Byte).into(),
                 dest: Destination::Accumulator(OperandSize::Byte),
                 size: 2
             }
@@ -2353,7 +2564,8 @@ mod test {
             ])),
             Instruction {
                 op,
-                source: MemoryAddressExpression::BXPlus(0x7).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::BXPlus(0x7), OperandSize::Word)
+                    .into(),
                 dest: Destination::Accumulator(OperandSize::Word),
                 size: 3
             }
@@ -2367,8 +2579,107 @@ mod test {
             ])),
             Instruction {
                 op,
-                source: MemoryAddressExpression::BXPlus(0xabcd).into(),
+                source: MemoryRegion::new(
+                    MemoryAddressExpression::BXPlus(0xabcd),
+                    OperandSize::Word
+                )
+                .into(),
                 dest: Destination::Accumulator(OperandSize::Word),
+                size: 4
+            }
+        );
+    }
+
+    #[test]
+    fn should_decode_shl_instructions() {
+        should_decode_shift_instructions(0b00100000, Operation::Shl);
+    }
+
+    #[test]
+    fn should_decode_shr_instructions() {
+        should_decode_shift_instructions(0b00101000, Operation::Shr);
+    }
+
+    #[test]
+    fn should_decode_sar_instructions() {
+        should_decode_shift_instructions(0b00111000, Operation::Sar);
+    }
+
+    #[test]
+    fn should_decode_rol_instructions() {
+        should_decode_shift_instructions(0b00000000, Operation::Rol);
+    }
+
+    #[test]
+    fn should_decode_ror_instructions() {
+        should_decode_shift_instructions(0b00001000, Operation::Ror);
+    }
+
+    #[test]
+    fn should_decode_rcl_instructions() {
+        should_decode_shift_instructions(0b00010000, Operation::Rcl);
+    }
+
+    #[test]
+    fn should_decode_rcr_instructions() {
+        should_decode_shift_instructions(0b00011000, Operation::Rcr);
+    }
+
+    fn should_decode_shift_instructions(shift_byte: u8, op: Operation) {
+        assert_eq!(
+            no_error(decode_instruction(&[0b11010001, 0b11000111 | shift_byte])),
+            Instruction {
+                op,
+                source: ShiftCount::One.into(),
+                dest: WordRegister::DI.into(),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b11010000, 0b11000111 | shift_byte])),
+            Instruction {
+                op,
+                source: ShiftCount::One.into(),
+                dest: ByteRegister::BH.into(),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[0b11010011, 0b11000111 | shift_byte])),
+            Instruction {
+                op,
+                source: ShiftCount::InCLReg.into(),
+                dest: WordRegister::DI.into(),
+                size: 2
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b11010001,
+                0b10000111 | shift_byte,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: ShiftCount::One.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BXPlus(0xabcd), OperandSize::Word)
+                    .into(),
+                size: 4
+            }
+        );
+        assert_eq!(
+            no_error(decode_instruction(&[
+                0b11010000,
+                0b10000111 | shift_byte,
+                0xcd,
+                0xab
+            ])),
+            Instruction {
+                op,
+                source: ShiftCount::One.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BXPlus(0xabcd), OperandSize::Byte)
+                    .into(),
                 size: 4
             }
         );
@@ -2513,7 +2824,11 @@ mod test {
             &Instruction {
                 op: Operation::Mov,
                 source: ByteRegister::AH.into(),
-                dest: MemoryAddressExpression::BPPlusSIPlus(3).into(),
+                dest: MemoryRegion::new(
+                    MemoryAddressExpression::BPPlusSIPlus(3),
+                    OperandSize::Byte
+                )
+                .into(),
                 size: 0
             }
             .to_string(),
@@ -2522,7 +2837,8 @@ mod test {
         assert_eq!(
             &Instruction {
                 op: Operation::Mov,
-                source: MemoryAddressExpression::Direct(256).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::Direct(256), OperandSize::Word)
+                    .into(),
                 dest: WordRegister::AX.into(),
                 size: 0
             }
@@ -2533,21 +2849,23 @@ mod test {
             &Instruction {
                 op: Operation::Mov,
                 source: Immediate::Word(256).into(),
-                dest: MemoryAddressExpression::BPPlusSI.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::BPPlusSI, OperandSize::Word)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "mov [bp + si], word 256"
+            "mov word [bp + si], 256"
         );
         assert_eq!(
             &Instruction {
                 op: Operation::Mov,
                 source: Immediate::Byte(7).into(),
-                dest: MemoryAddressExpression::DIPlus(9).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "mov [di + 9], byte 7"
+            "mov byte [di + 9], 7"
         );
         assert_eq!(
             &Instruction {
@@ -2587,11 +2905,12 @@ mod test {
             &Instruction {
                 op: Operation::Add,
                 source: Immediate::Byte(7).into(),
-                dest: MemoryAddressExpression::DIPlus(9).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "add [di + 9], byte 7"
+            "add byte [di + 9], 7"
         );
         assert_eq!(
             &Instruction {
@@ -2607,11 +2926,12 @@ mod test {
             &Instruction {
                 op: Operation::Adc,
                 source: Immediate::Byte(7).into(),
-                dest: MemoryAddressExpression::DIPlus(9).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "adc [di + 9], byte 7"
+            "adc byte [di + 9], 7"
         );
         assert_eq!(
             &Instruction {
@@ -2627,11 +2947,12 @@ mod test {
             &Instruction {
                 op: Operation::Sub,
                 source: Immediate::Byte(7).into(),
-                dest: MemoryAddressExpression::DIPlus(9).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "sub [di + 9], byte 7"
+            "sub byte [di + 9], 7"
         );
         assert_eq!(
             &Instruction {
@@ -2647,11 +2968,12 @@ mod test {
             &Instruction {
                 op: Operation::Sbb,
                 source: Immediate::Byte(7).into(),
-                dest: MemoryAddressExpression::DIPlus(9).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "sbb [di + 9], byte 7"
+            "sbb byte [di + 9], 7"
         );
         assert_eq!(
             &Instruction {
@@ -2667,11 +2989,12 @@ mod test {
             &Instruction {
                 op: Operation::Cmp,
                 source: Immediate::Byte(7).into(),
-                dest: MemoryAddressExpression::DIPlus(9).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "cmp [di + 9], byte 7"
+            "cmp byte [di + 9], 7"
         );
         assert_eq!(
             &Instruction {
@@ -2687,11 +3010,12 @@ mod test {
             &Instruction {
                 op: Operation::And,
                 source: Immediate::Byte(7).into(),
-                dest: MemoryAddressExpression::DIPlus(9).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "and [di + 9], byte 7"
+            "and byte [di + 9], 7"
         );
         assert_eq!(
             &Instruction {
@@ -2707,11 +3031,12 @@ mod test {
             &Instruction {
                 op: Operation::Or,
                 source: Immediate::Byte(7).into(),
-                dest: MemoryAddressExpression::DIPlus(9).into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 size: 0
             }
             .to_string(),
-            "or [di + 9], byte 7"
+            "or byte [di + 9], 7"
         );
         assert_eq!(
             &Instruction {
@@ -2726,7 +3051,8 @@ mod test {
         assert_eq!(
             &Instruction {
                 op: Operation::Mul,
-                source: MemoryAddressExpression::DIPlus(9).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Word)
+                    .into(),
                 dest: Destination::Accumulator(OperandSize::Word),
                 size: 0
             }
@@ -2736,7 +3062,8 @@ mod test {
         assert_eq!(
             &Instruction {
                 op: Operation::Mul,
-                source: MemoryAddressExpression::DIPlus(9).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
                 dest: Destination::Accumulator(OperandSize::Byte),
                 size: 0
             }
@@ -2746,7 +3073,8 @@ mod test {
         assert_eq!(
             &Instruction {
                 op: Operation::Imul,
-                source: MemoryAddressExpression::DIPlus(9).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Word)
+                    .into(),
                 dest: Destination::Accumulator(OperandSize::Word),
                 size: 0
             }
@@ -2756,7 +3084,8 @@ mod test {
         assert_eq!(
             &Instruction {
                 op: Operation::Div,
-                source: MemoryAddressExpression::DIPlus(9).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Word)
+                    .into(),
                 dest: Destination::Accumulator(OperandSize::Word),
                 size: 0
             }
@@ -2766,7 +3095,8 @@ mod test {
         assert_eq!(
             &Instruction {
                 op: Operation::Idiv,
-                source: MemoryAddressExpression::DIPlus(9).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Word)
+                    .into(),
                 dest: Destination::Accumulator(OperandSize::Word),
                 size: 0
             }
@@ -2776,12 +3106,141 @@ mod test {
         assert_eq!(
             &Instruction {
                 op: Operation::Not,
-                source: MemoryAddressExpression::DIPlus(9).into(),
+                source: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Word)
+                    .into(),
                 dest: Destination::Accumulator(OperandSize::Word),
                 size: 0
             }
             .to_string(),
             "not word [di + 9]"
+        );
+    }
+
+    #[test]
+    fn should_display_shift_instructions() {
+        assert_eq!(
+            &Instruction {
+                op: Operation::Shl,
+                source: ShiftCount::One.into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "shl bp, 1"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Shl,
+                source: ShiftCount::InCLReg.into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "shl bp, cl"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Shl,
+                source: ShiftCount::One.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Word)
+                    .into(),
+                size: 0
+            }
+            .to_string(),
+            "shl word [di + 9], 1"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Shl,
+                source: ShiftCount::One.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
+                size: 0
+            }
+            .to_string(),
+            "shl byte [di + 9], 1"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Shl,
+                source: ShiftCount::InCLReg.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Word)
+                    .into(),
+                size: 0
+            }
+            .to_string(),
+            "shl word [di + 9], cl"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Shl,
+                source: ShiftCount::InCLReg.into(),
+                dest: MemoryRegion::new(MemoryAddressExpression::DIPlus(9), OperandSize::Byte)
+                    .into(),
+                size: 0
+            }
+            .to_string(),
+            "shl byte [di + 9], cl"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Shr,
+                source: ShiftCount::One.into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "shr bp, 1"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Sar,
+                source: ShiftCount::One.into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "sar bp, 1"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Rol,
+                source: ShiftCount::One.into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "rol bp, 1"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Ror,
+                source: ShiftCount::One.into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "ror bp, 1"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Rcl,
+                source: ShiftCount::One.into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "rcl bp, 1"
+        );
+        assert_eq!(
+            &Instruction {
+                op: Operation::Rcr,
+                source: ShiftCount::One.into(),
+                dest: WordRegister::BP.into(),
+                size: 0
+            }
+            .to_string(),
+            "rcr bp, 1"
         );
     }
 }

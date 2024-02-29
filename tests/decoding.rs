@@ -326,18 +326,18 @@ fn test_decoding_arithmetic_imm_mem_reg_instructions(op: &str) {
         {0} bh, -3\n\
         {0} bx, 4096\n\
         {0} bx, -4096\n\
-        {0} [5], byte 3\n\
-        {0} [bp], byte -3\n\
-        {0} [di + 1], byte 3\n\
-        {0} [bp + di + 512], byte -3\n\
-        {0} [5], word 3\n\
-        {0} [bp], word -3\n\
-        {0} [di + 1], word 3\n\
-        {0} [bp + di + 512], word -3\n\
-        {0} [5], word 4096\n\
-        {0} [bp], word -4096\n\
-        {0} [di + 1], word 4096\n\
-        {0} [bp + di + 512], word -4096",
+        {0} byte [5], 3\n\
+        {0} byte [bp], -3\n\
+        {0} byte [di + 1], 3\n\
+        {0} byte [bp + di + 512], -3\n\
+        {0} word [5], 3\n\
+        {0} word [bp], -3\n\
+        {0} word [di + 1], 3\n\
+        {0} word [bp + di + 512], -3\n\
+        {0} word [5], 4096\n\
+        {0} word [bp], -4096\n\
+        {0} word [di + 1], 4096\n\
+        {0} word [bp + di + 512], -4096",
         op
     ))
 }
@@ -428,6 +428,69 @@ fn test_decoding_arithmetic_reg_mem_accum_reg_instructions(op: &str) {
         {0} word [bp + 4]\n\
         {0} byte [bp + 4096]\n\
         {0} word [bp + 4096]",
+        op
+    ))
+}
+
+#[test]
+fn test_decoding_shl_instructions() {
+    test_decoding_shift_instructions("shl");
+}
+
+#[test]
+fn test_decoding_shr_instructions() {
+    test_decoding_shift_instructions("shr");
+}
+
+#[test]
+fn test_decoding_sar_instructions() {
+    test_decoding_shift_instructions("sar");
+}
+
+#[test]
+fn test_decoding_rol_instructions() {
+    test_decoding_shift_instructions("rol");
+}
+
+#[test]
+fn test_decoding_ror_instructions() {
+    test_decoding_shift_instructions("ror");
+}
+
+#[test]
+fn test_decoding_rcl_instructions() {
+    test_decoding_shift_instructions("rcl");
+}
+
+#[test]
+fn test_decoding_rcr_instructions() {
+    test_decoding_shift_instructions("rcr");
+}
+
+fn test_decoding_shift_instructions(op: &str) {
+    test_decoding(format!(
+        "\
+        bits 16\n\
+        {0} ax, 1\n\
+        {0} bx, 1\n\
+        {0} al, 1\n\
+        {0} bh, 1\n\
+        {0} ax, cl\n\
+        {0} bx, cl\n\
+        {0} al, cl\n\
+        {0} bh, cl\n\
+        {0} word [bp], 1\n\
+        {0} word [bp + 4], 1\n\
+        {0} word [bp + 4096], 1\n\
+        {0} byte [bp], 1\n\
+        {0} byte [bp + 4], 1\n\
+        {0} byte [bp + 4096], 1\n\
+        {0} word [bp], cl\n\
+        {0} word [bp + 4], cl\n\
+        {0} word [bp + 4096], cl\n\
+        {0} byte [bp], cl\n\
+        {0} byte [bp + 4], cl\n\
+        {0} byte [bp + 4096], cl",
         op
     ))
 }
